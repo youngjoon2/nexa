@@ -34,6 +34,7 @@ export class Indexer {
   stop(){this.stopped=true;if(this.interval)clearInterval(this.interval);for(const w of this.watchers.values())w.close();this.watchers.clear();for(const t of this.timers.values())clearTimeout(t);this.timers.clear();}
   state(){return {queued:this.pending.length,running:this.active?1:0};}
   busy(sourceId:string){return this.active?.sourceId===sourceId||this.pending.some(j=>j.sourceId===sourceId);}
+  versionBusy(versionId:string){return [this.active,...this.pending].some(job=>job?.request?.reindexVersionId===versionId||job?.request?.parentVersionId===versionId);}
   private save(job:Work){if(job.kind==='version')this.store.db.query('INSERT OR REPLACE INTO kb_version_jobs VALUES(?,?)').run(job.id,JSON.stringify(job));else this.store.saveJob(job);}
   jobs(){return [...this.store.jobs(),...this.store.db.query('SELECT data FROM kb_version_jobs ORDER BY rowid DESC LIMIT 100').all().map((r:any)=>JSON.parse(r.data))].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));}
   enqueue(sourceId:string):Job {

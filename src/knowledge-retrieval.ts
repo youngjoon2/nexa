@@ -12,7 +12,7 @@ export async function searchKnowledge(kb:KnowledgeBase,providers:Providers,input
   const merged=new Map<string,Hit>();
   kb.lexical(input,40).forEach((hit,i)=>merged.set(occurrenceKey(hit),{...hit,score:1/(61+i),channels:['keyword']}));
   let mode:'hybrid'|'keyword'='keyword';
-  if(scope.snapshotIds.length&&scope.coverage.documents) {
+  if(providers.config.mode!=='keyword'&&scope.snapshotIds.length&&scope.coverage.documents) {
     try {
       const vector=await providers.embed(input.query,true);
       const must:any[]=[{key:'projectId',match:{value:scope.projectId}},{key:'snapshotIds',match:{any:scope.snapshotIds}}];
@@ -50,7 +50,7 @@ export async function askKnowledge(kb:KnowledgeBase,providers:Providers,input:Kn
     for(const hit of result.hits) {
       if((counts.get(hit.documentId)||0)>=2)continue;
       const id='D'+(context.size+1);
-      const line=JSON.stringify({id,...hit})+'\n';
+      const line=JSON.stringify({...hit,id})+'\n';
       if(await providers.tokens(prompt+'\n'+evidence+line+'\n질문: '+input.query,'generation')>2900)continue;
       evidence+=line;context.set(id,hit);counts.set(hit.documentId,(counts.get(hit.documentId)||0)+1);
       if(context.size>=5)break;

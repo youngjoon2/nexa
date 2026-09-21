@@ -8,7 +8,7 @@
     set(key, value) { try { sessionStorage.setItem(`nexa.${key}`, value); } catch { /* A restricted browser can still use this session in memory. */ } }
   };
   const state = {
-    view: 'search', mode: 'ask', sourceType: 'folder',
+    view: 'search', mode: 'ask', modeChosen: false, sourceType: 'folder',
     base: session.get('base'), apiKey: session.get('apiKey'), adminKey: session.get('adminKey'),
     sources: [], jobs: [], health: null, meta: null, sourcesLoaded: false, sourcesError: null,
     queryController: null, querySequence: 0, previewController: null,
@@ -54,6 +54,13 @@
   function badge(value, type = '') { return el('span', `badge ${type}`.trim(), value); }
 
   async function api(path, { method = 'GET', body, admin = false, signal } = {}) {
+    // Queries expose cancellation; reads and management dialogs have a deadline.
+    const timeoutMs = method === 'GET' ? 15000 : /^\/api\/v1\/(ask|query|search)$/.test(path) ? 0 : 120000;
+    if (timeoutMs) {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    }
+    const timeoutError = () => new Error(method === 'GET' ? '서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.' : '서버 응답 시간이 초과되었습니다. 작업이 처리되었을 수 있으니 목록과 작업 현황을 확인한 후 다시 시도해 주세요.');
     const headers = new Headers({ Accept: 'application/json' });
     if (state.apiKey) headers.set('Authorization', `Bearer ${state.apiKey}`);
     if (admin && state.adminKey) headers.set('X-Nexa-Admin-Key', state.adminKey);
@@ -67,11 +74,16 @@
       response = await fetch(`${state.base}${path}`, { method, headers, body: payload, signal, credentials: 'omit', cache: 'no-store' });
     } catch (error) {
       if (error.name === 'AbortError') throw error;
+      if (error.name === 'TimeoutError') throw timeoutError();
       throw new Error('API 서버에 연결할 수 없습니다. 서버 실행 상태와 연결 설정을 확인해 주세요.');
     }
     let data;
     try { data = await response.json(); }
-    catch { throw new Error(`서버가 올바른 JSON 응답을 반환하지 않았습니다. (HTTP ${response.status})`); }
+    catch (error) {
+      if (signal?.reason?.name === 'TimeoutError' || error.name === 'TimeoutError') throw timeoutError();
+      if (error.name === 'AbortError') throw error;
+      throw new Error(`서버가 올바른 JSON 응답을 반환하지 않았습니다. (HTTP ${response.status})`);
+    }
     if (!response.ok) {
       const error = new Error(data?.error?.message || `요청을 처리하지 못했습니다. (HTTP ${response.status})`);
       error.code = data?.error?.code;
@@ -116,7 +128,7 @@
     const label = { search: '지식 검색', sources: '자료 관리', jobs: '색인 작업' }[view];
     $('#breadcrumb-current').textContent = label;
     document.title = `${label} · Nexa`;
-    if (updateHash && location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+    if (updateHash && location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
     if (view === 'sources') void refreshSources();
     if (view === 'jobs') void refreshJobs();
     window.NexaKnowledge?.viewChanged(view);
@@ -131,10 +143,13 @@
     });
     $('#search-mode-hint').textContent = mode === 'ask' ? '검색한 자료를 바탕으로 답변합니다' : '관련 코드와 문서를 직접 찾아봅니다';
     $('#submit-query span').textContent = mode === 'ask' ? '질문하기' : '검색하기';
+    window.NexaKnowledge?.modeChanged();
   }
 
   function updateHealth(data) {
     state.health = data;
+    const keywordOnly = data?.mode === 'keyword';
+    if (keywordOnly && !state.modeChosen && !state.queryController && $('#search-form').getAttribute('aria-busy') !== 'true') setMode('search');
     const values = data?.counts || {};
     $('#stat-sources').textContent = count(values.sources);
     $('#stat-documents').textContent = count(values.documents);
@@ -148,17 +163,17 @@
     for (const service of ['generation', 'embedding', 'vector']) {
       const chip = $(`#service-${service}`);
       const ok = data?.services?.[service]?.ok === true;
-      chip.classList.toggle('ok', ok);
-      chip.classList.toggle('error', !ok);
-      $('span', chip).textContent = ok ? '연결됨' : '연결 필요';
+      chip.classList.toggle('ok', !keywordOnly && ok);
+      chip.classList.toggle('error', !keywordOnly && !ok);
+      $('span', chip).textContent = keywordOnly ? '사용 안 함' : ok ? '연결됨' : '연결 필요';
     }
-    const allOk = ['generation', 'embedding', 'vector'].every(name => data?.services?.[name]?.ok === true);
+    const allOk = keywordOnly || ['generation', 'embedding', 'vector'].every(name => data?.services?.[name]?.ok === true);
     const connection = $('#server-state');
     connection.className = `connection-pill ${allOk ? 'ok' : ''}`;
-    connection.replaceChildren(el('span', `tiny-dot ${allOk ? 'ok' : 'warning'}`), document.createTextNode(allOk ? '모든 서비스 연결됨' : '일부 서비스 연결 필요'));
+    connection.replaceChildren(el('span', `tiny-dot ${allOk ? 'ok' : 'warning'}`), document.createTextNode(keywordOnly ? '키워드 검색 사용 가능' : allOk ? '모든 서비스 연결됨' : '일부 서비스 연결 필요'));
     $('#connection-dot').className = `tiny-dot ${allOk ? 'ok' : 'warning'}`;
     $('#connection-label').textContent = allOk ? '워크스페이스 연결됨' : 'API 서버 연결됨';
-    $('#runtime-mode').textContent = data?.mode === 'keyword' ? '키워드 검색 모드' : ['hybrid', 'full'].includes(data?.mode) ? '하이브리드 검색 모드' : '';
+    $('#runtime-mode').textContent = keywordOnly ? '키워드 검색 모드 · AI 답변 생성은 사용하지 않습니다' : ['hybrid', 'full'].includes(data?.mode) ? '하이브리드 검색 모드' : '';
   }
 
   function healthUnavailable() {
@@ -174,6 +189,7 @@
       $('span', chip).textContent = '확인 불가';
     }
     for (const id of ['stat-sources', 'stat-documents', 'stat-chunks', 'nav-source-count']) $(`#${id}`).textContent = '—';
+    show($('#nav-job-count'), false);
     $('#runtime-mode').textContent = '';
     show($('#empty-library'), false);
   }
@@ -216,7 +232,7 @@
   }
 
   function statusBadge(status) {
-    const labels = { queued: ['대기 중', 'warning'], running: ['처리 중', 'blue'], indexing: ['색인 중', 'blue'], ready: ['검색 가능', 'ok'], indexed: ['검색 가능', 'ok'], completed: ['완료', 'ok'], failed: ['실패', 'error'], error: ['오류', 'error'], warning: ['진단 확인', 'warning'], pending: ['대기 중', 'warning'], empty: ['자료 없음', ''], partial: ['일부 완료', 'warning'], disabled: ['비활성', ''] };
+    const labels = { queued: ['대기 중', 'warning'], running: ['처리 중', 'blue'], indexing: ['색인 중', 'blue'], ready: ['검색 가능', 'ok'], indexed: ['검색 가능', 'ok'], completed: ['완료', 'ok'], failed: ['실패', 'error'], cancelled: ['취소됨', ''], error: ['오류', 'error'], warning: ['진단 확인', 'warning'], pending: ['대기 중', 'warning'], empty: ['자료 없음', ''], partial: ['일부 완료', 'warning'], disabled: ['비활성', ''] };
     const [label, type] = labels[status] || [status || '상태 미확인', ''];
     return badge(label, type);
   }
@@ -430,6 +446,17 @@
     node.append(el('span', '', message));
   }
 
+  function resetQuery() {
+    state.querySequence += 1;
+    state.queryController?.abort();
+    state.queryController = null;
+    setQueryBusy(false);
+    $('#results-area').replaceChildren();
+    show($('#results-area'), false);
+    show($('#query-status'), false);
+    show($('#overview'));
+  }
+
   function setQueryBusy(busy) {
     $('#submit-query').disabled = busy;
     $$('.segment[data-mode]').forEach(node => { node.disabled = busy; });
@@ -446,7 +473,8 @@
     event?.preventDefault();
     if (state.mode === 'ask' && window.NexaKnowledge) return window.NexaKnowledge.submitQuery();
     const query = $('#query').value.trim();
-    if (!query || state.queryController) return;
+    if (!query) { queryStatus('검색하거나 질문할 내용을 입력해 주세요.', { error: true }); $('#query').focus(); return; }
+    if (state.queryController) return;
     if (query.length > 1200) { queryStatus('질문은 1,200자 이하로 입력해 주세요.', { error: true }); return; }
     const sequence = ++state.querySequence;
     const mode = state.mode;
@@ -469,8 +497,8 @@
       if ($('#revision-filter').value) body.revision = $('#revision-filter').value;
       const data = await api(`/api/v1/${mode}`, { method: 'POST', body, signal: controller.signal });
       if (sequence !== state.querySequence) return;
-      show($('#query-status'), false);
       renderResults(data, mode);
+      queryStatus(mode === 'ask' ? '답변을 확인해 주세요.' : `검색을 완료했습니다. ${count(data.hits?.length || 0)}개 결과가 있습니다.`);
       window.NexaKnowledge?.decorateResults(data, body);
     } catch (error) {
       if (sequence !== state.querySequence) return;
@@ -503,7 +531,7 @@
       $('#preview-title').textContent = data.title || hit.title || '문서 미리보기';
       const lines = String(data.text || '').split('\n');
       const pageSize = 600;
-      let offset = !hit.page && hit.startLine ? Math.floor((hit.startLine - 1) / pageSize) * pageSize : 0;
+      let offset = !hit.page && hit.startLine ? Math.floor(Math.max(0, Math.min(hit.startLine - 1, lines.length - 1)) / pageSize) * pageSize : 0;
       function renderLines(focusHit = false) {
         const pre = el('pre', 'document-lines');
         pre.style.counterReset = `document-lines ${offset}`;
@@ -560,6 +588,20 @@
     if (!$('#source-dialog').open) $('#source-dialog').showModal();
   }
 
+  const busyDialogs = new WeakMap();
+  function setDialogBusy(dialog, busy) {
+    dialog.setAttribute('aria-busy', String(busy));
+    if (busy) {
+      if (busyDialogs.has(dialog)) return;
+      const controls = $$('button,input,select,textarea', dialog).map(node => [node, node.disabled]);
+      busyDialogs.set(dialog, controls);
+      controls.forEach(([node]) => { node.disabled = true; });
+    } else {
+      busyDialogs.get(dialog)?.forEach(([node, disabled]) => { node.disabled = disabled; });
+      busyDialogs.delete(dialog);
+    }
+  }
+
   async function submitSource(event) {
     event.preventDefault();
     if (state.sourceBusy) return;
@@ -590,23 +632,25 @@
     if (body instanceof FormData) for (const [key, value] of Object.entries(extra)) body.append(key, value);
     else Object.assign(body, extra);
     state.sourceBusy = true;
-    $('#submit-source').disabled = true;
+    setDialogBusy($('#source-dialog'), true);
     $('#submit-source').textContent = type === 'upload' ? '업로드 중…' : '자료 연결 중…';
     show($('#source-error'), false);
     try {
       await api(`/api/v1/sources/${type}`, { method: 'POST', body, admin: true });
+      if (extra.projectId) await window.NexaKnowledge?.switchProject(extra.projectId);
+      setDialogBusy($('#source-dialog'), false);
       $('#source-dialog').close();
       $('#source-form').reset();
       setSourceType('folder');
       toast('자료를 연결했습니다. 색인 작업이 시작됩니다.');
       setView('sources');
-      await Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
+      void Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
     } catch (error) {
       $('#source-error').textContent = error.message;
       show($('#source-error'));
     } finally {
       state.sourceBusy = false;
-      $('#submit-source').disabled = false;
+      setDialogBusy($('#source-dialog'), false);
       $('#submit-source').textContent = '연결하고 색인하기';
     }
   }
@@ -620,19 +664,19 @@
 
   async function deleteSource() {
     const source = state.deletingSource;
-    if (!source) return;
-    $('#confirm-delete').disabled = true;
+    if (!source || $('#confirm-delete').disabled) return;
+    setDialogBusy($('#confirm-dialog'), true);
     show($('#delete-error'), false);
     try {
       await api(`/api/v1/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE', admin: true });
       $('#confirm-dialog').close();
       state.deletingSource = null;
       toast('자료 연결과 검색 색인을 삭제했습니다.');
-      await Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
+      void Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
     } catch (error) {
       $('#delete-error').textContent = error.message;
       show($('#delete-error'));
-    } finally { $('#confirm-delete').disabled = false; }
+    } finally { setDialogBusy($('#confirm-dialog'), false); }
   }
 
   function openSettings() {
@@ -656,10 +700,11 @@
         return;
       }
     }
-    state.queryController?.abort();
+    resetQuery();
     state.previewController?.abort();
     state.connectionSequence += 1;
     state.base = base;
+    state.modeChosen = false;
     state.apiKey = $('#setting-api-key').value.trim();
     state.adminKey = $('#setting-admin-key').value.trim();
     for (const key of ['base', 'apiKey', 'adminKey']) session.set(key, state[key]);
@@ -667,8 +712,12 @@
     state.sourcesLoaded = false;
     state.sourcesError = null;
     state.jobs = [];
+    state.meta = null;
+    healthUnavailable();
     setOptions($('#board-filter'), [], '전체 보드');
     setOptions($('#revision-filter'), [], '전체 리비전');
+    $('#board-options').replaceChildren();
+    $('#revision-options').replaceChildren();
     show($('#results-area'), false);
     show($('#overview'));
     $('#settings-dialog').close();
@@ -691,20 +740,26 @@
     node.addEventListener('click', () => setView(node.dataset.view));
   });
   $$('[data-navigate]').forEach(node => node.addEventListener('click', () => setView(node.dataset.navigate)));
-  $$('.segment[data-mode]').forEach(node => node.addEventListener('click', () => setMode(node.dataset.mode)));
+  $$('.segment[data-mode]').forEach(node => node.addEventListener('click', () => { state.modeChosen = true; setMode(node.dataset.mode); }));
   $$('.segment[data-source-type]').forEach(node => node.addEventListener('click', () => setSourceType(node.dataset.sourceType)));
   $$('[data-question]').forEach(node => node.addEventListener('click', () => { $('#query').value = node.dataset.question; $('#query').focus(); }));
-  $$('[data-close]').forEach(node => node.addEventListener('click', () => $(`#${node.dataset.close}`).close()));
+  $$('[data-close]').forEach(node => node.addEventListener('click', () => {
+    const dialog = $(`#${node.dataset.close}`);
+    if (dialog.getAttribute('aria-busy') !== 'true') dialog.close();
+  }));
   $$('dialog').forEach(dialog => dialog.addEventListener('click', event => {
-    if (event.target !== dialog) return;
+    if (event.target !== dialog || dialog.getAttribute('aria-busy') === 'true') return;
     const bounds = dialog.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   }));
+  document.addEventListener('cancel', event => {
+    if (event.target.getAttribute?.('aria-busy') === 'true') event.preventDefault();
+  }, true);
   $('#preview-dialog').addEventListener('close', () => { state.previewController?.abort(); state.previewController = null; });
   $('#search-form').addEventListener('submit', submitQuery);
   $('#cancel-query').addEventListener('click', () => { state.queryController?.abort(); void window.NexaKnowledge?.cancelQuery(); });
   $('#query').addEventListener('keydown', event => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); $('#search-form').requestSubmit(); }
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('#search-form').requestSubmit(); }
     if (event.key === 'Escape' && state.queryController) { event.preventDefault(); state.queryController.abort(); }
   });
   $('#add-source').addEventListener('click', openSourceDialog);
@@ -726,7 +781,7 @@
     }
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
-  window.Nexa = { $, $$, state, api, el, icon, button, show, count, date, badge, toast, emptyState, errorState, statusBadge, setOptions, setView, setMode, setQueryBusy, queryStatus, renderResults, citationCard, openPreview, openSourceDialog, openDeleteDialog, refreshSources, refreshJobs, refreshHealth, refreshMeta };
+  window.Nexa = { $, $$, state, api, el, icon, button, show, count, date, badge, toast, emptyState, errorState, statusBadge, setOptions, setView, setMode, setQueryBusy, resetQuery, setDialogBusy, queryStatus, renderResults, citationCard, openPreview, openSourceDialog, openDeleteDialog, refreshSources, refreshJobs, refreshHealth, refreshMeta };
   setView(location.hash.slice(1) || 'search', false);
   void Promise.allSettled([refreshHealth(), refreshMeta(), refreshSources(), refreshJobs()]);
   setInterval(poll, 8000);

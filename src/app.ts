@@ -7,7 +7,7 @@ import type {Config} from './config';
 import {Store} from './storage';
 import {Providers} from './providers';
 import {Indexer, inside} from './indexer';
-import {ask, search, validateSearch} from './retrieval';
+import {validateSearch} from './retrieval';
 import {AppError, type Source} from './types';
 import {isSupportedFile} from './ingestion';
 import {KnowledgeBase} from './knowledge';
@@ -22,11 +22,14 @@ function equalKey(actual:string,expected:string) {
 function field(value:unknown,name:string,fallback='') {
   if(value===undefined||value===null||value==='')return fallback;
   if(typeof value!=='string'||value.length>120||/[\x00-\x1f]/.test(value))throw new AppError('INVALID_FIELD',`${name}은 120자 이하의 문자열이어야 합니다.`);
-  return value.trim();
+  return value.trim()||fallback;
 }
 async function json(c:any) {
-  if(!c.req.header('content-type')?.includes('application/json'))throw new AppError('CONTENT_TYPE','application/json 본문이 필요합니다.',415);
-  try{return await c.req.json();}catch{throw new AppError('INVALID_JSON','JSON 형식을 확인하세요.');}
+  if(c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase()!=='application/json')throw new AppError('CONTENT_TYPE','application/json 본문이 필요합니다.',415);
+  let body:unknown;
+  try{body=await c.req.json();}catch{throw new AppError('INVALID_JSON','JSON 형식을 확인하세요.');}
+  if(!body||typeof body!=='object'||Array.isArray(body))throw new AppError('INVALID_BODY','JSON 객체 본문이 필요합니다.');
+  return body as Record<string,any>;
 }
 
 export function createApplication(config:Config,options:{providers?:Providers;resume?:boolean}={}) {
@@ -95,9 +98,12 @@ export function createApplication(config:Config,options:{providers?:Providers;re
     if(store.sources().some(s=>resolve(s.path).toLowerCase()===resolve(path).toLowerCase()))throw new AppError('DUPLICATE_SOURCE','이미 등록한 폴더입니다.',409);
     if(indexer.state().queued>=100)throw new AppError('INDEX_QUEUE_FULL','색인 대기열이 가득 찼습니다.',429);
     const source:Source={id:crypto.randomUUID(),name:field(body.name,'소스 이름',basename(path)),kind:'folder',path,board:field(body.board,'보드'),revision:field(body.revision,'리비전'),status:'queued'};
-    store.addSource(source);
-    knowledge.saveConnection(source.id,{projectId,role});
-    return c.json({source,job:indexer.enqueue(source.id)},201);
+    const job=store.db.transaction(()=>{
+      store.addSource(source);
+      knowledge.saveConnection(source.id,{projectId,role});
+      return indexer.enqueue(source.id);
+    })();
+    return c.json({source,job},201);
   });
   app.post('/api/v1/sources/upload',async c=>{
     let form:FormData;
@@ -117,10 +123,15 @@ export function createApplication(config:Config,options:{providers?:Providers;re
     await mkdir(path,{recursive:true});
     try {
       for(const [i,f] of (files as File[]).entries())await Bun.write(join(path,String(i+1).padStart(3,'0')+'-'+f.name),f);
-      store.addSource(source);
-      knowledge.saveConnection(source.id,{projectId,role});
+      // A different upload may fill the queue while these files are being written.
+      // Persist the source and job together so rejected requests leave no orphan.
+      const job=store.db.transaction(()=>{
+        store.addSource(source);
+        knowledge.saveConnection(source.id,{projectId,role});
+        return indexer.enqueue(id);
+      })();
+      return c.json({source,job},201);
     }catch(error){await rm(path,{recursive:true,force:true});throw error;}
-    return c.json({source,job:indexer.enqueue(id)},201);
   });
   app.post('/api/v1/sources/:id/reindex',c=>{
     const source=store.source(c.req.param('id'));if(!source)throw new AppError('NOT_FOUND','소스를 찾을 수 없습니다.',404);

@@ -5,7 +5,7 @@
   const projectSessionKey = () => `nexa.project.${N.state.base || location.origin}`;
   function savedProject() { try { return sessionStorage.getItem(projectSessionKey()) || ''; } catch { return ''; } }
   function saveProject() { try { sessionStorage.setItem(projectSessionKey(), K.projectId); } catch { /* Restricted storage still permits the current in-memory selection. */ } }
-  const K = { projects: [], projectId: savedProject(), modules: [], versions: [], candidates: [], analyses: [], epoch: 0, refreshing: false, analysisId: null, querying: false, queryEpoch: 0, queryController: null, queryInput: null };
+  const K = { projects: [], projectId: savedProject(), modules: [], versions: [], candidates: [], analyses: [], epoch: 0, refreshing: false, refreshDone: null, refreshController: null, analysisId: null, querying: false, queryEpoch: 0, queryController: null, queryInput: null };
   const roles = { code: '소스코드', spec: '사양·개발 문서', reference: '빌드·참고 자료' };
   const path = value => encodeURIComponent(value);
   const projectSources = () => N.state.sources.filter(s => (s.projectId || 'default') === K.projectId);
@@ -17,6 +17,8 @@
   function input(id, placeholder, required = false) { const node = el('input'); node.id = id; node.placeholder = placeholder || ''; node.required = required; node.maxLength = 120; return node; }
   function select(id, values = [], first) { const node = el('select'); node.id = id; options(node, values, first); return node; }
   function options(node, values, first) {
+    const entries = [...(first ? [{value:first[0],label:first[1]}] : []), ...values.map(value => ({value:String(value.id),label:value.label ?? value.name}))];
+    if (node.options.length === entries.length && entries.every((entry, index) => node.options[index].value === entry.value && node.options[index].textContent === entry.label)) return;
     const previous = node.value;
     node.replaceChildren();
     if (first) node.append(new Option(first[1], first[0]));
@@ -42,7 +44,7 @@
   }
   function dialog(id, title) {
     const node = el('dialog', 'dialog kb-dialog'); node.id = id; node.setAttribute('aria-label', title);
-    const heading = el('div', 'dialog-heading'); heading.append(el('h2', '', title), button('닫기', 'text-button', () => node.close()));
+    const heading = el('div', 'dialog-heading'); heading.append(el('h2', '', title), button('닫기', 'text-button', () => { if (node.getAttribute('aria-busy') !== 'true') node.close(); }));
     const body = el('div', 'kb-dialog-body'); node.append(heading, body); document.body.append(node);
     return { node, body };
   }
@@ -60,9 +62,11 @@
     const actions = el('div', 'dialog-actions'); actions.append(submit); form.append(actions);
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (submit.disabled) return;
-      submit.disabled = true; const old = submit.textContent; submit.textContent = '처리 중…';
+      const modal = form.closest('dialog');
+      const old = submit.textContent; submit.textContent = '처리 중…';
+      if (modal) N.setDialogBusy(modal, true); else submit.disabled = true;
       if ($('.form-error', form)) show($('.form-error', form), false);
-      try { await task(); } catch (error) { formError(form, error); } finally { submit.disabled = false; submit.textContent = old; }
+      try { await task(); } catch (error) { formError(form, error); } finally { if (modal) N.setDialogBusy(modal, false); else submit.disabled = false; submit.textContent = old; }
     });
     return submit;
   }
@@ -72,7 +76,8 @@
   const projectSelect = select('kb-project', [], ['', '프로젝트 불러오는 중']);
   projectSelect.setAttribute('aria-label', '프로젝트');
   const projectStatus = el('span', 'kb-freshness', '자료 상태 확인 중');
-  scope.append(field('프로젝트', projectSelect), button('프로젝트 추가', 'text-button', openProject), projectStatus);
+  const addProject = button('프로젝트 추가', 'text-button', openProject);
+  scope.append(field('프로젝트', projectSelect), addProject, projectStatus);
   $('#main').prepend(scope);
   const queryScope = el('div', 'kb-query-scope');
   const queryMode = select('kb-query-mode', [{id:'auto',label:'질문에서 자동 선택'},{id:'general',label:'일반 질문'},{id:'feature',label:'기능이 포함된 버전'},{id:'compare',label:'두 버전 사양 비교'}]);
@@ -131,8 +136,8 @@
   function sourceFields() { return {projectId:sourceProject.value || K.projectId,role:sourceRole.value}; }
 
   function modeChanged() {
-    const mode = queryMode.value;
     const asking = N.state.mode === 'ask';
+    const mode = asking ? queryMode.value : 'general';
     show(modeField, asking);
     show(versionAField, !asking || mode !== 'feature'); show(versionBField, asking && mode === 'compare'); show(featureVersions, asking && mode === 'feature');
     show(oldFilters, !asking || mode === 'auto' || mode === 'general');
@@ -140,22 +145,30 @@
     scopeNote.textContent = mode === 'feature' ? '선택하지 않으면 모든 확정 버전을 조사합니다. 사양 명시·코드 구현·빌드 포함을 따로 확인하며, 근거가 없으면 미확인으로 표시합니다.' : mode === 'compare' ? 'A → B 순서로 선택한 모듈의 전체 사양 문서를 비교합니다. 양쪽 원문·표·수치의 근거를 함께 확인하세요.' : '현재 작업 자료는 자동 갱신됩니다. 확정 버전은 보존된 자료를 검색합니다.';
   }
   queryMode.addEventListener('change', modeChanged); modeChanged();
-  $$('[data-mode]').forEach(control=>control.addEventListener('click',modeChanged));
   function updateSelectors() {
     options(projectSelect, K.projects, K.projects.length ? null : ['', '프로젝트를 추가하세요']); projectSelect.value = K.projectId;
-    options(sourceProject, K.projects); sourceProject.value = K.projectId;
+    options(sourceProject, K.projects);
+    if (!$('#source-dialog').open) sourceProject.value = K.projectId;
     options(moduleSelect, K.modules, ['', '전체 모듈']);
-    options(versionA, K.versions, ['', queryMode.value === 'compare' ? '버전 A 선택' : '현재 작업 자료']); options(versionB, K.versions, ['', '버전 B 선택']);
-    const selected = new Set($$('input:checked', featureVersions).map(n => n.value)); featureVersions.replaceChildren(el('span', 'form-note', '조사할 확정 버전 (미선택 시 전체)'));
-    K.versions.forEach(version => { const check = el('input'); check.type = 'checkbox'; check.value = version.id; check.checked = selected.has(version.id); const label = el('label', 'kb-check'); label.append(check, document.createTextNode(version.name)); featureVersions.append(label); });
-    if (!K.versions.length) featureVersions.append(note('확정 버전이 없습니다. 자료 관리에서 버전을 보존하세요.'));
+    options(versionA, K.versions, ['', N.state.mode === 'ask' && queryMode.value === 'compare' ? '버전 A 선택' : '현재 작업 자료']); options(versionB, K.versions, ['', '버전 B 선택']);
+    const signature = JSON.stringify(K.versions.map(version => [version.id, version.name]));
+    if (featureVersions.dataset.versions !== signature) {
+      featureVersions.dataset.versions = signature;
+      const selected = new Set($$('input:checked', featureVersions).map(n => n.value)); featureVersions.replaceChildren(el('span', 'form-note', '조사할 확정 버전 (미선택 시 전체)'));
+      K.versions.forEach(version => { const check = el('input'); check.type = 'checkbox'; check.value = version.id; check.checked = selected.has(version.id); const label = el('label', 'kb-check'); label.append(check, document.createTextNode(version.name)); featureVersions.append(label); });
+      if (!K.versions.length) featureVersions.append(note('확정 버전이 없습니다. 자료 관리에서 버전을 보존하세요.'));
+    }
+    modeChanged();
     setQueryBusy(K.querying || !!N.state.queryController);
   }
   async function refresh(quiet = false) {
-    if (K.refreshing) return; K.refreshing = true;
+    if (K.refreshing) { if (quiet) return; await K.refreshDone; return refresh(quiet); }
+    K.refreshing = true;
+    let finished; K.refreshDone = new Promise(resolve => { finished = resolve; });
+    const controller = new AbortController(); K.refreshController = controller;
     const epoch = K.epoch, connection = N.state.connectionSequence;
     try {
-      const data = await api('/api/v1/projects', {signal:AbortSignal.timeout(15000)});
+      const data = await api('/api/v1/projects', {signal:controller.signal});
       if (epoch !== K.epoch || connection !== N.state.connectionSequence) return;
       K.projects = data.projects || [];
       if (!K.projects.some(p => p.id === K.projectId)) K.projectId = K.projects[0]?.id || '';
@@ -163,28 +176,33 @@
       if (!K.projectId) { K.modules=[]; K.versions=[]; K.candidates=[]; K.analyses=[]; }
       else {
         const id = K.projectId;
-        const results = await Promise.allSettled([api(`/api/v1/projects/${path(id)}/modules`), api(`/api/v1/projects/${path(id)}/versions`), api(`/api/v1/analyses?projectId=${path(id)}`)]);
+        const results = await Promise.allSettled([api(`/api/v1/projects/${path(id)}/modules`, {signal:controller.signal}), api(`/api/v1/projects/${path(id)}/versions`, {signal:controller.signal}), api(`/api/v1/analyses?projectId=${path(id)}`, {signal:controller.signal})]);
         if (epoch !== K.epoch || connection !== N.state.connectionSequence || id !== K.projectId) return;
         if (results[0].status === 'fulfilled') K.modules=results[0].value.modules || [];
         if (results[1].status === 'fulfilled') { K.versions=results[1].value.versions || []; K.candidates=results[1].value.candidates || []; }
         if (results[2].status === 'fulfilled') K.analyses=results[2].value.jobs || [];
         const failure=results.find(r=>r.status==='rejected'); if(failure)throw failure.reason;
       }
-      updateSelectors(); renderSources(); renderVersions(); renderModules(); renderAnalyses();
-    } catch(error) { if(epoch !== K.epoch)return; projectStatus.textContent='프로젝트 정보를 불러오지 못했습니다'; if(!quiet){versionBody.replaceChildren(N.errorState(error,()=>void refresh()));toast(error.message,true);} }
-    finally { K.refreshing=false; }
+      updateSelectors();
+      // Preserve keyboard focus and expanded controls when a poll changes nothing.
+      const signature = JSON.stringify([K.projectId,K.projects,K.modules,K.versions,K.candidates,K.analyses,N.state.sources,N.state.sourcesLoaded,Boolean(N.state.sourcesError)]);
+      if (!quiet || K.rendered !== signature) { renderSources(); renderVersions(); renderModules(); renderAnalyses(); K.rendered = signature; }
+    } catch(error) { if(epoch !== K.epoch || connection !== N.state.connectionSequence || error.name === 'AbortError')return; K.rendered=null; projectStatus.textContent='프로젝트 정보를 불러오지 못했습니다'; if(!quiet){versionBody.replaceChildren(N.errorState(error,()=>void refresh()));toast(error.message,true);} }
+    finally { K.refreshing=false; K.refreshController=null; finished(); }
   }
   async function switchProject(id) {
-    if(id===K.projectId)return; await cancelQuery(); K.epoch++; K.projectId=id; saveProject(); K.modules=[]; K.versions=[]; K.candidates=[]; K.analyses=[];
-    versionA.value='';versionB.value='';moduleSelect.value=''; show($('#results-area'),false); show($('#overview'));
+    if(id===K.projectId)return;
+    if (K.querying && !await cancelQuery()) { projectSelect.value = K.projectId; return; }
+    N.resetQuery(); K.epoch++; K.refreshController?.abort(); K.projectId=id; saveProject(); K.modules=[]; K.versions=[]; K.candidates=[]; K.analyses=[];
+    versionA.value='';versionB.value='';moduleSelect.value='';$('#board-filter').value='';$('#revision-filter').value='';
     updateSelectors(); renderSources(); renderVersions(); renderModules(); renderAnalyses();
-    while(K.refreshing)await new Promise(resolve=>setTimeout(resolve,30)); await Promise.allSettled([refresh(),N.refreshJobs()]);
+    await Promise.allSettled([refresh(),N.refreshJobs()]);
   }
   projectSelect.addEventListener('change', () => void switchProject(projectSelect.value));
   function openProject() {
     const d=dialog('kb-project-dialog','프로젝트 추가'); const form=el('form');const name=input('kb-project-name','예: Nexa SDK',true);
     form.append(field('프로젝트 이름',name),note('Git 저장소와 문서 폴더를 같은 프로젝트에 연결합니다.'));
-    submitButton(form,'프로젝트 만들기',async()=>{const result=await api('/api/v1/projects',{method:'POST',admin:true,body:{name:name.value.trim()}});K.projectId=result.project.id;saveProject();d.node.close();await refresh();toast('프로젝트를 만들었습니다. 자료를 연결하세요.');});
+    submitButton(form,'프로젝트 만들기',async()=>{const result=await api('/api/v1/projects',{method:'POST',admin:true,body:{name:name.value.trim()}});K.projects.push(result.project);d.node.close();await switchProject(result.project.id);toast('프로젝트를 만들었습니다. 자료를 연결하세요.');});
     d.body.append(form);d.node.addEventListener('close',()=>d.node.remove());d.node.showModal();
   }
   function renderSources() {
@@ -194,7 +212,7 @@
     const failures=sources.filter(s=>s.errors?.length||s.lastError||s.unavailable).length;
     const pending=sources.filter(s=>['queued','indexing'].includes(s.status)).length;
     const latest=sources.map(s=>s.lastCheckedAt).filter(Boolean).sort().pop();
-    projectStatus.textContent=`${sources.length}개 연결 · ${failures ? `확인 필요 ${failures}개` : pending ? `${pending}개 반영 중` : '자료 상태 확인됨'}${latest ? ` · 최근 확인 ${date(latest)}` : ''}`;
+    projectStatus.textContent=`${sources.length}개 연결 · ${N.state.sourcesError ? '새로고침 실패 · 이전 목록 표시 중' : failures ? `확인 필요 ${failures}개` : pending ? `${pending}개 반영 중` : '자료 상태 확인됨'}${latest ? ` · 최근 확인 ${date(latest)}` : ''}`;
     if(!sources.length){container.replaceChildren(N.emptyState('프로젝트에 자료를 연결하세요','Git 저장소와 사양 문서 폴더를 등록하면 변경된 파일을 자동 반영합니다.','folder',button('자료 연결','button button-primary',N.openSourceDialog)));return true;}
     container.replaceChildren(...sources.map(source=>{
       const card=el('article','source-card kb-source-card'),content=el('div','source-content'),heading=el('div','source-title-row');
@@ -318,7 +336,7 @@
   }
 
   function searchScope() { return {...(K.projectId?{projectId:K.projectId}:{}),...(versionA.value?{versionId:versionA.value}:{}),...(moduleSelect.value?{moduleId:moduleSelect.value}:{})}; }
-  function setQueryBusy(busy) { $$('#kb-query-mode,#kb-module,#kb-version-a,#kb-version-b,#kb-feature-versions input,#kb-project').forEach(node=>{node.disabled=busy;}); }
+  function setQueryBusy(busy) { $$('#kb-query-mode,#kb-module,#kb-version-a,#kb-version-b,#kb-feature-versions input,#kb-project').forEach(node=>{node.disabled=busy;}); addProject.disabled=busy; }
   function queryBody() {
     const mode=queryMode.value;let versionIds;
     if(mode==='compare'){if(!versionA.value||!versionB.value||versionA.value===versionB.value)throw new Error('서로 다른 확정 버전 A와 B를 선택하세요.');versionIds=[versionA.value,versionB.value];}
@@ -328,13 +346,13 @@
   }
   async function submitQuery(override) {
     if(K.querying||N.state.queryController)return;
-    let body;try{body=override||queryBody();if(!body.query)return;if(!body.projectId)throw new Error('프로젝트를 선택하세요.');if(body.query.length>1200)throw new Error('질문은 1,200자 이하로 입력하세요.');}catch(error){N.queryStatus(error.message,{error:true});return;}
+    let body;try{body=override||queryBody();if(!body.query){$('#query').focus();throw new Error('검색하거나 질문할 내용을 입력해 주세요.');}if(!body.projectId)throw new Error('프로젝트를 선택하세요.');if(body.query.length>1200)throw new Error('질문은 1,200자 이하로 입력하세요.');}catch(error){N.queryStatus(error.message,{error:true});return;}
     const epoch=++K.queryEpoch;K.querying=true;K.analysisId=null;K.queryInput=body;K.queryController=new AbortController();N.setQueryBusy(true);show($('#results-area'),false);show($('#overview'),false);N.queryStatus('자료 범위를 확인하고 질문을 처리하고 있습니다…',{loading:true});
     try{
       const data=await api('/api/v1/query',{method:'POST',body,signal:K.queryController.signal});if(epoch!==K.queryEpoch)return;
       if(data.type==='clarification'){renderClarification(data,body);show($('#query-status'),false);}
       else if(data.type==='analysis'){K.analysisId=data.job.id;await watchAnalysis(data.job,epoch);}
-      else{show($('#query-status'),false);N.renderResults(data,'ask');prependScope(body,data.scope,data.coverage);}
+      else{N.renderResults(data,'ask');prependScope(body,data.scope,data.coverage);N.queryStatus('답변을 확인해 주세요.');}
     }catch(error){if(epoch===K.queryEpoch)N.queryStatus(error.name==='AbortError'?'요청을 취소했습니다.':error.message,{error:error.name!=='AbortError'});}
     finally{if(epoch===K.queryEpoch){K.querying=false;K.queryController=null;K.analysisId=null;N.setQueryBusy(false);}}
   }
@@ -363,9 +381,11 @@
     });
   }
   async function cancelQuery() {
-    if(!K.querying)return;const id=K.analysisId;
-    if(id){try{await api(`/api/v1/analyses/${path(id)}/cancel`,{method:'POST'});}catch(error){toast(`분석 취소 실패: ${error.message}`,true);return;}}
+    if(!K.querying)return true;const id=K.analysisId, epoch=K.queryEpoch;
+    if(id){try{await api(`/api/v1/analyses/${path(id)}/cancel`,{method:'POST',signal:AbortSignal.timeout(15000)});}catch(error){if(epoch===K.queryEpoch)toast(`분석 취소 실패: ${error.message}`,true);return false;}}
+    if(epoch!==K.queryEpoch)return false;
     K.queryEpoch++;K.queryController?.abort();K.querying=false;K.analysisId=null;K.queryController=null;N.setQueryBusy(false);N.queryStatus(id?'분석 취소를 요청했습니다. 실행 중인 모델 단계가 끝나면 중단합니다.':'요청을 취소했습니다.');void refresh(true);
+    return true;
   }
   async function watchAnalysis(initial,epoch) {
     let job=initial;
@@ -374,7 +394,7 @@
       if(job.result){renderAnalysis(job);if(active(job))$('#results-area').prepend(note('현재까지 완료된 부분 결과입니다. 나머지 자료를 분석하고 있습니다.'));}
       if(!active(job)){
         if(job.status==='failed')throw new Error(job.error||job.message||'분석에 실패했습니다.');
-        if(job.status==='cancelled')N.queryStatus(job.message||'분석이 취소되었습니다.');else show($('#query-status'),false);
+        if(job.status==='cancelled')N.queryStatus(job.message||'분석이 취소되었습니다.');else N.queryStatus('분석을 완료했습니다. 아래 결과와 근거를 확인해 주세요.');
         void refresh(true);return;
       }
       await new Promise(resolve=>setTimeout(resolve,2000));if(epoch!==K.queryEpoch)return;
@@ -414,19 +434,27 @@
     analysisList.replaceChildren(...K.analyses.map(job=>{const card=el('article','job-card');const heading=el('div','job-heading');heading.append(el('h3','',job.query),N.statusBadge(job.status));card.append(heading,el('p','job-message',job.message||''),note(`${job.mode==='feature'?'기능 버전 탐색':'사양 비교'} · ${date(job.createdAt)} · ${count(job.processed)} / ${count(job.total)}`));
       const controls=el('div','kb-inline');const open=button(active(job)?'진행 상황 보기':'결과 보기','button button-secondary',()=>void openAnalysis(job));controls.append(open);
       if(active(job)){const cancel=button('분석 취소','button button-secondary',()=>action(cancel,async()=>{await api(`/api/v1/analyses/${path(job.id)}/cancel`,{method:'POST'});await refresh();}));controls.append(cancel);}
-      if(['failed','cancelled'].includes(job.status))controls.append(button('다시 분석','button button-secondary',()=>{N.setView('search');$('#query').value=job.query;void submitQuery({projectId:job.projectId,query:job.query,mode:job.mode,versionIds:job.versionIds,...(job.moduleId?{moduleId:job.moduleId}:{})});}));card.append(controls);if(job.error)warningList([job.error],card);return card;}));
+      if(['failed','cancelled'].includes(job.status))controls.append(button('다시 분석','button button-secondary',()=>{
+        if(K.querying||N.state.queryController){toast('현재 질문이 끝나거나 취소한 후 다시 분석해 주세요.');return;}
+        applyAnalysisScope(job);void submitQuery({projectId:job.projectId,query:job.query,mode:job.mode,versionIds:job.versionIds,...(job.moduleId?{moduleId:job.moduleId}:{})});
+      }));card.append(controls);if(job.error)warningList([job.error],card);return card;}));
+  }
+  function applyAnalysisScope(job) {
+    N.setView('search');N.setMode('ask');N.state.modeChosen=true;queryMode.value=job.mode;moduleSelect.value=job.moduleId||'';versionA.value=job.versionIds?.[0]||'';versionB.value=job.versionIds?.[1]||'';
+    $$('input',featureVersions).forEach(control=>{control.checked=(job.versionIds||[]).includes(control.value);});
+    $('#board-filter').value='';$('#revision-filter').value='';modeChanged();$('#query').value=job.query;
   }
   async function openAnalysis(previous) {
-    if(K.querying){toast('현재 질문이 끝나거나 취소한 후 분석 결과를 열어주세요.');return;}
-    N.setView('search');N.setMode('ask');queryMode.value=previous.mode;moduleSelect.value=previous.moduleId||'';versionA.value=previous.versionIds?.[0]||'';versionB.value=previous.versionIds?.[1]||'';modeChanged();$('#query').value=previous.query;const epoch=++K.queryEpoch;K.querying=true;K.analysisId=previous.id;K.queryController=new AbortController();N.setQueryBusy(true);
-    try{const data=await api(`/api/v1/analyses/${path(previous.id)}`);if(epoch!==K.queryEpoch)return;renderAnalysis(data.job);await watchAnalysis(data.job,epoch);}catch(error){if(epoch===K.queryEpoch)N.queryStatus(error.message,{error:true});}finally{if(epoch===K.queryEpoch){K.querying=false;K.analysisId=null;K.queryController=null;N.setQueryBusy(false);}}
+    if(K.querying||N.state.queryController){toast('현재 질문이 끝나거나 취소한 후 분석 결과를 열어주세요.');return;}
+    applyAnalysisScope(previous);show($('#results-area'),false);show($('#overview'),false);N.queryStatus('분석 결과를 불러오는 중입니다…',{loading:true});const epoch=++K.queryEpoch;K.querying=true;K.analysisId=previous.id;K.queryController=new AbortController();N.setQueryBusy(true);
+    try{const data=await api(`/api/v1/analyses/${path(previous.id)}`,{signal:K.queryController.signal});if(epoch!==K.queryEpoch)return;renderAnalysis(data.job);await watchAnalysis(data.job,epoch);}catch(error){if(epoch===K.queryEpoch)N.queryStatus(error.message,{error:true});}finally{if(epoch===K.queryEpoch){K.querying=false;K.analysisId=null;K.queryController=null;N.setQueryBusy(false);}}
   }
   async function connectionChanged() {
-    K.queryEpoch++;K.queryController?.abort();K.querying=false;K.analysisId=null;K.epoch++;K.projectId=savedProject();K.projects=[];K.modules=[];K.versions=[];K.candidates=[];K.analyses=[];N.setQueryBusy(false);
-    while(K.refreshing)await new Promise(resolve=>setTimeout(resolve,30));await refresh();
+    K.queryEpoch++;K.queryController?.abort();K.querying=false;K.analysisId=null;K.epoch++;K.refreshController?.abort();K.projectId=savedProject();K.projects=[];K.modules=[];K.versions=[];K.candidates=[];K.analyses=[];N.setQueryBusy(false);
+    updateSelectors();renderSources();renderVersions();renderModules();renderAnalyses();await refresh();
   }
   function viewChanged(view){if(view==='sources'||view==='jobs')void refresh(true);}
-  window.NexaKnowledge={renderSources,prepareSourceDialog,sourceFields,setSourceType,searchScope,setQueryBusy,submitQuery,cancelQuery,connectionChanged,viewChanged,filterJobs:jobs=>jobs.filter(job=>(job.projectId||N.state.sources.find(source=>source.id===job.sourceId)?.projectId||'default')===K.projectId),decorateResults:(data,body)=>prependScope(body,data.scope,data.coverage)};
+  window.NexaKnowledge={renderSources,prepareSourceDialog,sourceFields,setSourceType,searchScope,setQueryBusy,modeChanged,submitQuery,cancelQuery,switchProject,connectionChanged,viewChanged,filterJobs:jobs=>jobs.filter(job=>(job.projectId||N.state.sources.find(source=>source.id===job.sourceId)?.projectId||'default')===K.projectId),decorateResults:(data,body)=>prependScope(body,data.scope,data.coverage)};
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&K.querying&&!$$('dialog[open]').length)void cancelQuery();});
   void refresh();setInterval(()=>{if(!document.hidden)void refresh(true);},8000);
 })();

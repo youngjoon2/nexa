@@ -41,8 +41,19 @@ function Get-NexaOwnedProcess($Record) {
     } catch { return $null }
 }
 
-function Write-NexaState([string]$Path, $Records, [string]$Url) {
+function Assert-NexaSessionSettings($State, [string]$Url, [string]$ListenAddress, [bool]$NoModels) {
+    if ($State.url -ne $Url) { throw "Nexa is already running at $($State.url), but $Url was requested. Stop this data directory's session before changing the address or port." }
+    $modelsRunning = @($State.processes | Where-Object { $_.name -in @('generation', 'embedding', 'qdrant') }).Count -gt 0
+    if ($modelsRunning -eq $NoModels) { throw "Nexa is already running with a different model mode. Stop this data directory's session before changing -NoModels." }
+    # New receipts preserve the actual bind address; older receipts only have a probe URL.
+    if ($State.PSObject.Properties['settings'] -and $State.settings) {
+        if ($State.settings.listenAddress -ne $ListenAddress) { throw "Nexa is already running with a different -ListenAddress. Stop this data directory's session before changing its network binding." }
+    }
+}
+
+function Write-NexaState([string]$Path, $Records, [string]$Url, $Settings = $null) {
     $state = @{ root = $script:NexaRoot; url = $Url; processes = @($Records) }
+    if ($Settings) { $state.settings = $Settings }
     $temporary = $Path + '.tmp'
     [IO.File]::WriteAllText($temporary, ($state | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
     Move-Item -LiteralPath $temporary -Destination $Path -Force

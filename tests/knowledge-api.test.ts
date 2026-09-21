@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {createApplication} from '../src/app';
 import {loadConfig} from '../src/config';
+import {AppError,type Job} from '../src/types';
 
 let directory:string,runtime:ReturnType<typeof createApplication>,admin:string;
 beforeEach(async()=>{directory=await mkdtemp(join(tmpdir(),'nexa-http-knowledge-'));admin=crypto.randomUUID();runtime=createApplication(loadConfig({NEXA_DATA_DIR:join(directory,'data'),NEXA_MODE:'keyword',NEXA_ADMIN_KEY:admin,NEXA_SYNC_INTERVAL_MS:'1000',NEXA_DEBOUNCE_MS:'30'},resolve(import.meta.dir,'..')),{resume:false});});
@@ -18,5 +19,62 @@ test('project/module/source management requires admin while query and analysis r
 test('HTTP version comparison uses preserved documents and reindex survives original source deletion',async()=>{const {project,folder,source}=await setup();const a=await freeze(project.id,'A',source.id);await writeFile(join(folder,'uart.md'),'# UART\n통신 속도는 921600 baud입니다.\n자동복구 기능을 지원합니다.\n');await req('/sources/'+source.id+'/sync',{});await idle();const b=await freeze(project.id,'B',source.id);const search=await req('/search',{query:'115200',projectId:project.id,versionId:a.id});expect(search.body.hits[0].text).toContain('115200');const citation=search.body.hits[0];expect((await req('/documents/'+citation.documentId)).body.text).toContain('115200');const response=await req('/query',{query:'A에서 B로 UART 사양 변경점은?',projectId:project.id,mode:'compare',versionIds:[a.id,b.id]});expect(response.status).toBe(202);await idle();const job=(await req('/analyses/'+response.body.job.id)).body.job;expect(job.status).toBe('completed');expect(job.result.documents[0].hunks[0].removed.join('\n')).toContain('115200');expect(job.result.documents[0].hunks[0].added.join('\n')).toContain('921600');await req('/sources/'+source.id,undefined,'DELETE');expect((await req('/documents/'+citation.documentId)).status).toBe(200);const rebuilt=await req('/versions/'+a.id+'/reindex',{});expect(rebuilt.status).toBe(202);await idle();expect(runtime.indexer.jobs().find(j=>j.id===rebuilt.body.job.id)?.status).toBe('completed');expect(runtime.knowledge.version(a.id)?.snapshots).toEqual(a.snapshots);expect((await req('/search',{query:'115200',projectId:project.id,versionId:a.id})).body.hits[0].text).toContain('115200');});
 
 test('feature API emits every selected version and does not call missing evidence absent',async()=>{const {project,source}=await setup();await freeze(project.id,'A',source.id);await freeze(project.id,'B',source.id);const result=await req('/query',{projectId:project.id,query:'자동복구 기능이 들어간 SW 버전이 어디야?',mode:'auto'});expect(result.body.type).toBe('analysis');await idle();const job=(await req('/analyses/'+result.body.job.id)).body.job;expect(job.result.rows).toHaveLength(2);expect(job.result.rows.every((r:any)=>r.state==='unknown')).toBe(true);expect((await req('/query',{projectId:project.id,query:'A와 없는 버전 비교',mode:'compare'})).body.type).toBe('clarification');});
+
+test('version deletion waits for queued or running reindex work to finish',async()=>{
+  const {project,source}=await setup();const version=await freeze(project.id,'A',source.id);
+  let release!:()=>void,started!:()=>void;
+  const blocked=new Promise<void>(resolve=>{release=resolve;});
+  const entered=new Promise<void>(resolve=>{started=resolve;});
+  const embed=runtime.indexer.embedSnapshot.bind(runtime.indexer);
+  runtime.indexer.embedSnapshot=async(...args)=>{started();await blocked;return embed(...args);};
+  try {
+    const job=runtime.indexer.enqueueVersionReindex(version.id);
+    expect((await req('/versions/'+version.id,undefined,'DELETE')).status).toBe(409);
+    await entered;
+    expect((await req('/versions/'+version.id,undefined,'DELETE')).status).toBe(409);
+    expect(runtime.knowledge.version(version.id)).not.toBeNull();
+    release();await idle();
+    expect(runtime.indexer.jobs().find(item=>item.id===job.id)?.status).toBe('completed');
+    expect((await req('/versions/'+version.id,undefined,'DELETE')).status).toBe(200);
+  } finally {release();runtime.indexer.embedSnapshot=embed;await idle();}
+});
+
+test('malformed module rules return a validation error without creating a module',async()=>{
+  const {project}=await setup();
+  for(const rule of [null,[],false,42,'*.md'])expect((await req('/projects/'+project.id+'/modules',{name:'invalid',rules:[rule]})).status).toBe(400);
+  expect(runtime.knowledge.modules(project.id)).toHaveLength(0);
+});
+
+test('failed Git source enqueue rolls back registration and allows retry',async()=>{
+  const enqueue=runtime.indexer.enqueue;
+  runtime.indexer.enqueue=()=>{throw new AppError('INDEX_QUEUE_FULL','Queue filled during Git registration.',429);};
+  try {
+    for(let attempt=0;attempt<2;attempt++){
+      const response=await req('/sources/git',{url:'https://github.com/example/firmware',name:' Firmware '});
+      expect(response.status).toBe(429);
+      expect(response.body.error.code).toBe('INDEX_QUEUE_FULL');
+      expect(runtime.store.counts().sources).toBe(0);
+      expect(runtime.store.jobs()).toEqual([]);
+      expect(runtime.store.db.query('SELECT sourceId FROM kb_connections').all()).toEqual([]);
+    }
+  } finally {runtime.indexer.enqueue=enqueue;}
+});
+
+test('Git source names trim optional input and use the repository name when blank',async()=>{
+  const enqueue=runtime.indexer.enqueue;
+  runtime.indexer.enqueue=sourceId=>{
+    const job:Job={id:crypto.randomUUID(),sourceId,status:'queued',processed:0,total:0,message:'queued',errors:[],createdAt:new Date().toISOString()};
+    runtime.store.saveJob(job);return job;
+  };
+  try {
+    for(const [repository,name,expected] of [['default-name',undefined,'default-name'],['blank-name','   ','blank-name'],['custom-name','  Firmware  ','Firmware']]){
+      const response=await req('/sources/git',{url:`https://github.com/example/${repository}`,name});
+      expect(response.status).toBe(201);
+      expect(response.body.source.name).toBe(expected);
+      expect(runtime.store.source(response.body.source.id)?.name).toBe(expected);
+      expect(runtime.store.jobs().some(job=>job.id===response.body.job.id)).toBe(true);
+    }
+  } finally {runtime.indexer.enqueue=enqueue;}
+});
 
 test('automatic folder reconciliation reflects changes and pause prevents automatic queueing',async()=>{const {project,folder,source}=await setup();runtime.indexer.resume();await idle();await writeFile(join(folder,'uart.md'),'# UART\nAUTO_CHANGED_REGISTER is enabled.\n');const deadline=Date.now()+5000;while(!runtime.knowledge.lexical({query:'AUTO_CHANGED_REGISTER',projectId:project.id}).length){if(Date.now()>deadline)throw new Error('Automatic sync not observed');await Bun.sleep(50);}expect(runtime.store.counts().sources).toBe(1);await idle();await req('/sources/'+source.id+'/settings',{paused:true});await writeFile(join(folder,'uart.md'),'# UART\nPAUSED_REGISTER\n');runtime.indexer.reconcile();await Bun.sleep(100);await idle();expect(runtime.knowledge.lexical({query:'PAUSED_REGISTER',projectId:project.id})).toHaveLength(0);await req('/sources/'+source.id+'/settings',{paused:false});await idle();expect(runtime.knowledge.lexical({query:'PAUSED_REGISTER',projectId:project.id})).toHaveLength(1);});

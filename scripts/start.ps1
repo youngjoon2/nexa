@@ -70,7 +70,7 @@ function Start-Component([string]$Name, [string]$Executable, [string[]]$Argument
     $process = Start-Process -FilePath $Executable -ArgumentList $quoted -WorkingDirectory $script:NexaRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logRoot "$Name.stdout.log") -RedirectStandardError (Join-Path $logRoot "$Name.stderr.log")
     $record = @{ name = $Name; pid = $process.Id; executable = $Executable; startedAt = $process.StartTime.ToUniversalTime().ToString('o') }
     $started.Add($record)
-    Write-NexaState $statePath $started.ToArray() $apiUrl
+    Write-NexaState $statePath $started.ToArray() $apiUrl @{ listenAddress = $ListenAddress }
     Write-Host "Waiting for $Name..."
     Wait-Healthy $Name $HealthUrl $process
 }
@@ -84,6 +84,7 @@ try {
         if ($live.Count -gt 0) {
             $api = @($live | Where-Object name -eq 'api')
             if ($api.Count -eq 1 -and $live.Count -eq @($existing.processes).Count) {
+                Assert-NexaSessionSettings $existing $apiUrl $ListenAddress ([bool]$NoModels)
                 try { $health = Invoke-WebRequest -Uri ($existing.url + '/api/v1/health') -Headers $apiHeaders -UseBasicParsing -TimeoutSec 3 } catch { throw 'Nexa processes exist but API health failed. Check NEXA_API_KEY or run scripts\stop.ps1 before restarting.' }
                 if ($health.StatusCode -eq 200) { Write-Host "Nexa is already running: $($existing.url)"; return }
             }

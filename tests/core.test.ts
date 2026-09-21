@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, lexicalQuery } from "../src/storage";
-import { SerialGate, type Providers } from "../src/providers";
+import { SerialGate, Providers } from "../src/providers";
+import type { Config } from "../src/config";
 import { search, validateAnswer, validateSearch } from "../src/retrieval";
 import type { Chunk, Document, Hit, Source } from "../src/types";
 
@@ -209,5 +210,39 @@ describe("bounded model queue", () => {
     expect(gate.running).toBe(0);
     expect(gate.waiting).toBe(0);
     expect(await gate.run(async () => "still works")).toBe("still works");
+  });
+});
+
+describe("local provider response validation", () => {
+  test("an inconsistent tokenizer fails promptly and releases embedding capacity", async () => {
+    const providers = new Providers({ mode: "full" } as Config);
+    let requests = 0;
+    providers.request = async () => { requests++; return { tokens: Array(2000).fill(1) }; };
+    await expect(providers.embed("x")).rejects.toMatchObject({ code: "MODEL_RESPONSE", status: 502 });
+    expect(requests).toBe(1);
+    expect(providers.embeddingGate.running).toBe(0);
+    expect(providers.embeddingGate.waiting).toBe(0);
+    providers.request = async (_base, path) => path === "/tokenize" ? { tokens: [1] } : { data: [{ embedding: Array(768).fill(0.1) }] };
+    expect(await providers.embed("working input")).toHaveLength(768);
+  });
+
+  test("malformed tokenizer and embedding responses are reported as provider errors", async () => {
+    const providers = new Providers({ mode: "full" } as Config);
+    providers.request = async () => null;
+    await expect(providers.tokens("query", "generation")).rejects.toMatchObject({ code: "MODEL_RESPONSE", status: 502 });
+    providers.request = async (_base, path) => path === "/tokenize" ? { tokens: [1] } : null;
+    await expect(providers.embed("query")).rejects.toMatchObject({ code: "EMBEDDING_DIMENSION", status: 502 });
+  });
+
+  test("invalid vector responses cannot be mistaken for a successful empty search", async () => {
+    const providers = new Providers({ mode: "full", collection: "test" } as Config);
+    for (const response of [null, {}, { result: {} }, { result: { points: {} } }, { result: { points: [null] } }, { result: { points: [{ id: "chunk", score: "0.9" }] } }]) {
+      providers.request = async () => response;
+      await expect(providers.vectorSearch([1], { query: "UART" })).rejects.toMatchObject({ code: "PROVIDER_RESPONSE", status: 502 });
+    }
+    providers.request = async () => ({ result: { points: [] } });
+    expect(await providers.vectorSearch([1], { query: "UART" })).toEqual([]);
+    providers.request = async () => ({ result: { points: [{ id: 42, score: 0.9 }] } });
+    expect(await providers.vectorSearch([1], { query: "UART" })).toEqual([{ id: "42", score: 0.9 }]);
   });
 });

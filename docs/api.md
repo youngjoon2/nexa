@@ -8,7 +8,7 @@
 
 `/sources`, `/projects`, `/versions` 아래 POST·DELETE는 `X-Nexa-Admin-Key: <admin-key>`도 필요합니다. 관리자 키는 `NEXA_ADMIN_KEY` 또는 `data/admin-key.txt`에서 가져오며 팀 키를 대체하지 않습니다. 분석 조회·취소는 팀 키만 사용합니다. 개인별 자료·분석 소유권은 없습니다.
 
-다른 출처의 웹 UI는 `NEXA_ALLOWED_ORIGINS`에 출처를 등록합니다. 허용된 OPTIONS는 204입니다. 쿠키 인증은 사용하지 않으며 키를 URL에 넣지 않습니다. JSON 본문은 `Content-Type: application/json`, 최대 64 KiB입니다. 업로드 전체 요청은 100 MiB까지입니다. 응답에 추가 필드가 생겨도 클라이언트가 허용해야 합니다.
+다른 출처의 웹 UI는 `NEXA_ALLOWED_ORIGINS`에 출처를 등록합니다. 허용된 OPTIONS는 204입니다. 쿠키 인증은 사용하지 않으며 키를 URL에 넣지 않습니다. JSON 본문은 `Content-Type: application/json`, 최대 64 KiB의 객체입니다. 배열·null·문자열 등 객체가 아닌 본문은 INVALID_BODY로 400을 반환합니다. 업로드 전체 요청은 100 MiB까지입니다. 응답에 추가 필드가 생겨도 클라이언트가 허용해야 합니다.
 
 오류는 `{"error":{"code":"INVALID_QUERY","message":"질문을 1~1,200자로 입력하세요."}}` 형태입니다. 주요 HTTP 상태는 입력 오류 400, 팀 인증 401, 관리자·출처 제한 403, 없음 404, 중복·처리 중·범위 변경 409, 크기 초과 413, Content-Type 415, 모델 문맥 초과 422, 대기열 초과 429, 응답 검증 실패 502, 서비스·Git 원격 사용 불가 503입니다. 비동기 처리 중 오류는 최초 HTTP 응답 대신 Job의 errors/error에 기록됩니다.
 
@@ -117,7 +117,7 @@ SoftwareVersion은 `{id,projectId,name,createdAt,status:"confirmed",snapshots:{s
 
 sourceIds 생략 시 접근 가능한 프로젝트 연결들의 현재 활성 스냅샷을 사용합니다. 명시적으로 `snapshots:{"source-id":"snapshot-id"}`를 보낼 수도 있습니다. 중복 이름, 빈 범위, 다른 프로젝트·소스 또는 불완전 스냅샷은 확정하지 않습니다. 202 이후 실패는 `/jobs`에서 확인하세요.
 
-`GET /versions/:id` → 200 `{"version":SoftwareVersion,"documents":[...]}`. 문서 객체 필드는 id/path/sourceId/moduleId/role/snapshotId이며 id를 `/documents/:id`에 사용합니다. `DELETE /versions/:id` → 200 `{"deleted":true}`. 대기·실행 분석에 포함되면 VERSION_BUSY, 후속 개정본이 참조하면 VERSION_REFERENCED로 409입니다.
+`GET /versions/:id` → 200 `{"version":SoftwareVersion,"documents":[...]}`. 문서 객체 필드는 id/path/sourceId/moduleId/role/snapshotId이며 id를 `/documents/:id`에 사용합니다. `DELETE /versions/:id` → 200 `{"deleted":true}`. 대기·실행 중인 분석, 재색인 또는 후속 개정본 보존 작업이 사용하면 VERSION_BUSY, 확정된 후속 개정본이 참조하면 VERSION_REFERENCED로 409입니다.
 
 `POST /versions/:id/reindex` → 202 `{"job":Job}`. 본문 없이 요청하고 `/jobs`로 완료를 확인합니다. 보존한 원문 bytes를 현재 파서로 다시 처리해 별도 검색 색인을 만든 뒤 해당 버전의 검색·분석에서 사용합니다. 원격 fetch나 현재 문서 폴더 읽기는 하지 않습니다. 확정 버전의 원래 snapshots 연결과 `/versions/:id` 문서 목록은 유지하므로 재색인 후 검색 인용의 snapshotId/documentId는 원래 목록과 다를 수 있습니다. 전체 원문 재처리가 성공해야 새 색인을 적용합니다. 원문이 없는 legacy 스냅샷은 LEGACY_ORIGINAL, 파싱 진단이 남으면 REPARSE_WARNING으로 작업이 실패하고 기존 색인을 유지합니다.
 
@@ -153,7 +153,7 @@ query는 필수 1~1,200자입니다. projectId 생략 시 선택 버전의 프�
 {"hits":[{"id":"chunk-id","documentId":"snapshot-document-id","sourceId":"source-id","title":"UART 사양","path":"uart.md","text":"UART baud is 115200.","projectId":"default","snapshotId":"snapshot-id","versionId":"version-id","moduleId":"module-id","role":"spec","board":"ATLAS","revision":"A","startLine":10,"endLine":10,"score":0.0327,"channels":["keyword","vector"]}],"mode":"hybrid","warnings":[],"coverage":{"documents":5,"failed":0},"scope":{"projectId":"default","snapshotIds":["snapshot-id"],"versionId":"version-id","moduleId":"module-id"}}
 ```
 
-score는 순위 결합 점수이며 정답 확률이 아닙니다. 동일 청크가 여러 스냅샷에 있으므로 합칠 때는 `(documentId,id)`를 사용합니다. coverage.failed는 진단 수이며 실패 파일 수와 다를 수 있습니다. scope는 실제 검색 범위입니다. 접근불가 연결은 최신 검색에서 제외하고 경고를 표시하지만 확정 버전은 보존 자료를 사용합니다.
+score는 순위 결합 점수이며 정답 확률이 아닙니다. 동일 청크가 여러 스냅샷에 있으므로 합칠 때는 `(documentId,id)`를 사용합니다. coverage.documents는 프로젝트·버전·모듈·역할·보드·리비전 필터를 적용한 문서 수이며 검색어 일치 결과 수와는 다릅니다. coverage.failed는 진단 수이며 실패 파일 수와 다를 수 있습니다. scope는 실제 검색 범위입니다. 접근불가 연결은 최신 검색에서 제외하고 경고를 표시하지만 확정 버전은 보존 자료를 사용합니다.
 
 인용 위치는 코드·텍스트의 1부터 시작하는 startLine/endLine, PDF의 page, DOCX의 headingPath(제목 배열)·blockId(블록 위치)·table(표 번호)입니다. DOCX에 Word 페이지 번호를 부여하지 않습니다. C/C++ 함수에는 symbol이 추가될 수 있습니다.
 

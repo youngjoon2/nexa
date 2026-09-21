@@ -97,6 +97,9 @@ Qdrant 검색 결과는 SQLite의 프로젝트·스냅샷·모듈 범위와 다�
 
 ```powershell
 & .\.runtime\bun\bun.exe --no-install test ./tests
+# 실행 스크립트의 프로세스 소유권과 설정 불일치 검사 (서비스 변경 없음)
+& .\scripts\test-process-ownership.ps1
+& .\scripts\test-session-settings.ps1
 # 실제 모델 서비스가 실행 중일 때: 예제 자료를 등록하고 6개 질의를 확인
 & .\.runtime\bun\bun.exe --no-install tests/live-smoke.ts
 # 선택 실행: 임시 자료로 50개 버전 × 10,000개 파일 항목의 저장·키워드 검색 확인

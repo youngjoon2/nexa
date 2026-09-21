@@ -8,7 +8,7 @@ import {SerialGate,type Providers} from '../src/providers';
 import type {Config} from '../src/config';
 import type {Hit,Source} from '../src/types';
 import {AnalysisManager,compareDocuments,diffText,planQuery,selectFeatureCandidates,validateFeatureEvidence} from '../src/analysis';
-import {searchKnowledge} from '../src/knowledge-retrieval';
+import {askKnowledge,searchKnowledge} from '../src/knowledge-retrieval';
 
 let directory:string,store:Store,kb:KnowledgeBase;
 const managers:AnalysisManager[]=[];
@@ -63,6 +63,57 @@ test('scoped hybrid search retains duplicate content occurrences and excludes ot
   expect(filter.must).toContainEqual({key:'roles',match:{value:'spec'}});
   expect(kb.memberships(duplicates[0]!.id)).toContainEqual({snapshotId:duplicateSnapshot.id,projectId:'default',moduleId:module.id,role:'spec'});
   expect(valid.length).toBe(2);
+});
+
+test('general answers expose the same evidence IDs that the model can cite and return original citations',async()=>{
+  const selected=version('v1',{'uart.md':'UART_CAP supports 115200 baud.','clock.md':'UART_CAP uses a 48 MHz clock.'});
+  const originals=kb.lexical({query:'UART_CAP',versionId:selected.id});
+  let evidence:Hit[]=[];
+  const p=providers('full',{complete:async(messages:{role:string;content:string}[],allowed:string[])=>{
+    const content=messages.find(message=>message.role==='user')!.content;
+    evidence=content.split('\n').filter(line=>line.startsWith('{')).map(line=>JSON.parse(line));
+    expect(evidence.map(hit=>hit.id)).toEqual(allowed);
+    expect(allowed).toEqual(['D1','D2']);
+    return {answerable:true,answer:'115200 baud 통신을 지원하며 48 MHz 클록을 사용합니다.',citations:allowed};
+  }});
+  const result=await askKnowledge(kb,p,{query:'UART_CAP',versionId:selected.id});
+  expect(result.answerable).toBe(true);
+  expect(result.citations.map(hit=>hit.id).sort()).toEqual(originals.map(hit=>hit.id).sort());
+  expect(result.citations.map(hit=>hit.documentId)).toEqual(evidence.map(hit=>hit.documentId));
+  expect(result.citations.every(hit=>hit.versionId===selected.id)).toBe(true);
+});
+
+test('search coverage counts only documents matching board and revision filters',async()=>{
+  const a=source('a'),b=source('b');a.board='Atlas';a.revision='A';b.board='Atlas';b.revision='B';
+  const first=snapshot(a,{'spec.md':'UART_CAP 115200 baud.'}),second=snapshot(b,{'spec.md':'UART_CAP 921600 baud.'});
+  const selected=kb.saveVersion({name:'both boards',projectId:'default',snapshots:{a:first.id,b:second.id}});
+  const input={query:'UART_CAP',versionId:selected.id,board:'Atlas',revision:'B'};
+  const result=await searchKnowledge(kb,providers(),input);
+  expect(result.coverage.documents).toBe(1);
+  expect(result.hits).toHaveLength(1);
+  expect(result.hits[0]!.text).toContain('921600');
+  expect(kb.scopeInfo({...input,revision:'unknown'}).coverage.documents).toBe(0);
+  expect(kb.scopeInfo({...input,board:'Other'}).coverage.documents).toBe(0);
+  expect(kb.scopeInfo({query:'UART_CAP',board:'Atlas'}).coverage.documents).toBe(2);
+});
+
+test('intentional keyword search skips model services while full-mode fallback preserves failure warnings',async()=>{
+  version('v1',{'uart.md':'UART_CAP supports 115200 baud.'});
+  kb.saveConnection('spec',{errors:['일부 문서를 읽지 못했습니다.']});
+  for(const mode of ['keyword','full'] as const){
+    let embeddingCalls=0,vectorCalls=0;
+    const p=providers(mode,{
+      embed:async()=>{embeddingCalls++;throw new Error('offline');},
+      request:async()=>{vectorCalls++;throw new Error('offline');},
+    });
+    const result=await searchKnowledge(kb,p,{query:'UART_CAP'});
+    expect(result.mode).toBe('keyword');
+    expect(result.hits).toHaveLength(1);
+    expect(result.warnings).toContain('spec: 일부 문서를 읽지 못했습니다.');
+    expect(result.warnings.some(warning=>warning.includes('임베딩 또는 벡터 서비스'))).toBe(mode==='full');
+    expect(embeddingCalls).toBe(mode==='keyword'?0:1);
+    expect(vectorCalls).toBe(0);
+  }
 });
 
 test('feature exploration always returns every version; keyword candidates and no-hits remain unknown',async()=>{

@@ -42,16 +42,21 @@ export class Providers {
   }
   async tokens(text:string,kind:'embedding'|'generation') {
     const result=await this.request(kind==='embedding'?this.config.embeddingURL:this.config.generationURL,'/tokenize',{content:text,add_special:false});
-    if(!Array.isArray(result.tokens)) throw new AppError('MODEL_RESPONSE','모델의 토큰 계산 응답이 잘못되었습니다.',502);
+    if(!Array.isArray(result?.tokens)) throw new AppError('MODEL_RESPONSE','모델의 토큰 계산 응답이 잘못되었습니다.',502);
     return result.tokens.length as number;
   }
   async embed(text:string,query=false) {
     return this.embeddingGate.run(async()=>{
       let input=(query?'task: search result | query: ':'')+text;
       let size=await this.tokens(input,'embedding');
-      while(size>1900){input=input.slice(0,Math.max(1,Math.floor(input.length*1800/size)));size=await this.tokens(input,'embedding');}
+      let attempts=0;
+      while(size>1900){
+        const length=Math.max(1,Math.floor(input.length*1800/size));
+        if(length>=input.length||attempts++>=16)throw new AppError('MODEL_RESPONSE','모델의 토큰 계산 결과로 입력 길이를 조정할 수 없습니다.',502);
+        input=input.slice(0,length);size=await this.tokens(input,'embedding');
+      }
       const result=await this.request(this.config.embeddingURL,'/v1/embeddings',{input});
-      const vector=result.data?.[0]?.embedding;
+      const vector=result?.data?.[0]?.embedding;
       if(!Array.isArray(vector)||vector.length!==768||vector.some((x:unknown)=>typeof x!=='number'||!Number.isFinite(x)))
         throw new AppError('EMBEDDING_DIMENSION','768차원 EmbeddingGemma 응답이 필요합니다.',502);
       return vector as number[];
@@ -79,7 +84,10 @@ export class Providers {
     if(input.board)must.push({key:'board',match:{value:input.board}});
     if(input.revision)must.push({key:'revision',match:{value:input.revision}});
     const result=await this.request(this.config.qdrantURL,this.collectionPath()+'/points/query',{query:vector,filter:must.length?{must}:undefined,limit:48,with_payload:false});
-    return result.result?.points || [];
+    const points=result?.result?.points;
+    if(!Array.isArray(points)||points.some((point:any)=>!point||!['string','number'].includes(typeof point.id)||typeof point.score!=='number'||!Number.isFinite(point.score)))
+      throw new AppError('PROVIDER_RESPONSE','벡터 검색 응답 형식이 잘못되었습니다.',502);
+    return points.map((point:any)=>({id:String(point.id),score:point.score}));
   }
   async complete(messages:{role:string;content:string}[],ids:string[]) {
     const schema={type:'object',properties:{answerable:{type:'boolean'},answer:{type:'string'},citations:{type:'array',items:{type:'string',enum:ids}}},required:['answerable','answer','citations'],additionalProperties:false};

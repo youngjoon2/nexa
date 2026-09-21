@@ -70,7 +70,10 @@ export class KnowledgeBase {
   addModule(projectId:string,body:any,id?:string) {
     this.requireProject(projectId);const name=label(body?.name,'모듈 이름');
     if(!Array.isArray(body.rules)||!body.rules.length||body.rules.length>100)throw new AppError('INVALID_RULES','모듈 경로 규칙 1~100개를 지정하세요.');
-    const rules=body.rules.map((r:any)=>({pattern:label(r.pattern,'경로 규칙',512),...(r.sourceId?{sourceId:label(r.sourceId,'자료 연결 ID')} :{}),...(r.role?{role:this.role(r.role)}:{})}));
+    const rules=body.rules.map((r:any)=>{
+      if(!r||typeof r!=='object'||Array.isArray(r))throw new AppError('INVALID_RULES','모듈 경로 규칙을 확인하세요.');
+      return {pattern:label(r.pattern,'경로 규칙',512),...(r.sourceId?{sourceId:label(r.sourceId,'자료 연결 ID')} :{}),...(r.role?{role:this.role(r.role)}:{})};
+    });
     for(const r of rules)if(r.sourceId&&this.connection(r.sourceId).projectId!==projectId)throw new AppError('INVALID_RULES','다른 프로젝트의 자료입니다.');
     if(id&&!this.modules(projectId).some(m=>m.id===id))throw new AppError('NOT_FOUND','모듈을 찾을 수 없습니다.',404);
     if(this.modules(projectId).some(m=>m.name===name&&m.id!==id))throw new AppError('DUPLICATE_MODULE','같은 이름의 모듈이 있습니다.',409);
@@ -168,7 +171,8 @@ export class KnowledgeBase {
       return c.snapshotId?[c.snapshotId]:[];
     });
     for(const id of snapshotIds){const s=this.snapshot(id);if(s?.errors.length&&version){warnings.push(...s.errors);failed+=s.errors.length;}if(s?.legacy)warnings.push('이관된 추출 텍스트입니다. 원문 재동기화 전까지 원본 파일 재현을 보장하지 않습니다.');}
-    const documents=snapshotIds.length?(this.db.query(`SELECT count(*) n FROM kb_files WHERE snapshotId IN (${snapshotIds.map(()=>'?').join(',')})${input.moduleId?' AND moduleId=?':''}${input.role?' AND role=?':''}`).get(...snapshotIds,...(input.moduleId?[input.moduleId]:[]),...(input.role?[input.role]:[])) as any).n:0;
+    const filters=(['moduleId','role','board','revision'] as const).filter(key=>input[key]);
+    const documents=snapshotIds.length?(this.db.query(`SELECT count(*) n FROM kb_files WHERE snapshotId IN (${snapshotIds.map(()=>'?').join(',')})${filters.map(key=>` AND ${key}=?`).join('')}`).get(...snapshotIds,...filters.map(key=>input[key]!)) as any).n:0;
     return {snapshotIds,warnings:[...new Set(warnings)],coverage:{documents,failed},projectId};
   }
   private filter(input:KnowledgeSearchInput) {

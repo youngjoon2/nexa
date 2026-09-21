@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { createApplication } from "../src/app";
 import { loadConfig } from "../src/config";
+import { AppError } from "../src/types";
 
 let temporaryDirectory: string;
 let runtime: ReturnType<typeof createApplication>;
@@ -116,6 +117,24 @@ describe("HTTP API access control", () => {
     expect(large.status).toBe(413);
     expect((await large.json()).error.code).toBe("BODY_TOO_LARGE");
   });
+
+  test("requires a JSON object and recognizes the exact JSON media type", async () => {
+    for (const body of [null, [], "settings", 123, true]) {
+      const response = await request("/api/v1/projects/default/versions", "POST", body);
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("INVALID_BODY");
+    }
+    for (const contentType of ["application/json-invalid", "text/plain; application/json"]) {
+      const response = await runtime.app.request("/api/v1/search", {
+        method: "POST", headers: { authorization: `Bearer ${config.apiKey}`, "content-type": contentType }, body: '{"query":"UART"}',
+      });
+      expect(response.status).toBe(415);
+    }
+    const response = await runtime.app.request("/api/v1/search", {
+      method: "POST", headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "Application/JSON; charset=utf-8" }, body: '{"query":"UART"}',
+    });
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("folder indexing through the API", () => {
@@ -214,6 +233,35 @@ describe("folder indexing through the API", () => {
 });
 
 describe("managed uploads", () => {
+  test("failed enqueue rolls back a new source, its settings and uploaded files", async () => {
+    const enqueue = runtime.indexer.enqueue;
+    runtime.indexer.enqueue = () => { throw new AppError("INDEX_QUEUE_FULL", "Queue filled during upload.", 429); };
+    try {
+      const form = new FormData();
+      form.append("files", new File(["UART_CR = 115200\n"], "manual.txt"));
+      const upload = await request("/api/v1/sources/upload", "POST", form);
+      expect(upload.status).toBe(429);
+      expect((await upload.json()).error.code).toBe("INDEX_QUEUE_FULL");
+      expect(await readdir(join(config.dataDir, "uploads"))).toEqual([]);
+      const folder = join(temporaryDirectory, "rejected-folder");
+      await mkdir(folder);
+      const registration = await request("/api/v1/sources/folder", "POST", { path: folder });
+      expect(registration.status).toBe(429);
+      expect(runtime.store.counts()).toEqual({ sources: 0, documents: 0, chunks: 0 });
+      expect(runtime.store.jobs()).toEqual([]);
+      expect(runtime.store.db.query("SELECT sourceId FROM kb_connections").all()).toEqual([]);
+    } finally { runtime.indexer.enqueue = enqueue; }
+  });
+
+  test("uses the filename when an optional source name contains only spaces", async () => {
+    const form = new FormData();
+    form.append("files", new File(["UART_CR = 115200\n"], "manual.txt"));
+    form.append("name", "   ");
+    const response = await request("/api/v1/sources/upload", "POST", form);
+    expect(response.status).toBe(201);
+    expect((await response.json()).source.name).toBe("manual.txt");
+  });
+
   test("indexes same-name uploads independently and deletes their owned directory with the source", async () => {
     const form = new FormData();
     form.append("files", new File(["# Uploaded Board\nUPLOAD_UART uses 115200 baud.\n"], "manual.md", { type: "text/markdown" }));

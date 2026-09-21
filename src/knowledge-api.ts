@@ -19,17 +19,23 @@ export function mountKnowledgeAPI(app:Hono,services:{knowledge:KnowledgeBase;ind
   app.get('/api/v1/projects/:id/versions',c=>{const id=c.req.param('id');kb.requireProject(id);return c.json({versions:kb.versions(id),candidates:kb.candidates(id)});});
   app.post('/api/v1/projects/:id/versions',async c=>{const body=await json(c);if(body?.sourceIds!==undefined&&(!Array.isArray(body.sourceIds)||body.sourceIds.some((x:any)=>typeof x!=='string')))throw new AppError('INVALID_SOURCES','자료 ID 목록을 확인하세요.');if(body?.snapshots!==undefined&&(!body.snapshots||typeof body.snapshots!=='object'||Array.isArray(body.snapshots)||Object.values(body.snapshots).some(x=>typeof x!=='string')))throw new AppError('INVALID_SNAPSHOT','스냅샷 선택을 확인하세요.');return c.json({job:indexer.enqueueVersion({...body,projectId:c.req.param('id')})},202);});
   app.get('/api/v1/versions/:id',c=>{const v=kb.version(c.req.param('id'));if(!v)throw new AppError('NOT_FOUND','SW 버전을 찾을 수 없습니다.',404);return c.json({version:v,documents:Object.values(v.snapshots).flatMap(id=>kb.snapshotFiles(id).map(f=>({id:f.id,path:f.path,sourceId:f.sourceId,moduleId:f.moduleId,role:f.role,snapshotId:id})))});});
-  app.delete('/api/v1/versions/:id',c=>{const id=c.req.param('id');if(analyses.list().some(j=>['queued','running'].includes(j.status)&&j.versionIds.includes(id)))throw new AppError('VERSION_BUSY','분석이 끝난 뒤 버전을 삭제하세요.',409);kb.deleteVersion(id);return c.json({deleted:true});});
+  app.delete('/api/v1/versions/:id',c=>{const id=c.req.param('id');if(indexer.versionBusy(id)||analyses.list().some(j=>['queued','running'].includes(j.status)&&j.versionIds.includes(id)))throw new AppError('VERSION_BUSY','이 버전을 사용하는 색인·보존·분석 작업이 끝난 뒤 삭제하세요.',409);kb.deleteVersion(id);return c.json({deleted:true});});
   app.post('/api/v1/versions/:id/reindex',c=>c.json({job:indexer.enqueueVersionReindex(c.req.param('id'))},202));
   app.post('/api/v1/sources/git',async c=>{
     const body=await json(c),git=validateGitSettings({url:body?.url,branch:body?.branch||'main',tagPattern:body?.tagPattern});
     const projectId=body?.projectId||'default';kb.requireProject(projectId);
     if(kb.sources().some(s=>s.projectId===projectId&&s.git?.url===git.url&&s.git?.branch===git.branch))throw new AppError('DUPLICATE_SOURCE','같은 저장소·브랜치가 이미 연결되어 있습니다.',409);
-    const id=crypto.randomUUID(),name=body?.name||git.url.split('/').at(-1)!.replace(/\.git$/,'');
-    if(typeof name!=='string'||!name.trim()||name.length>120||/[\x00-\x1f]/.test(name))throw new AppError('INVALID_FIELD','자료 이름을 확인하세요.');
+    const id=crypto.randomUUID(),fallbackName=git.url.split('/').at(-1)!.replace(/\.git$/,'');
+    const rawName=body?.name??'';
+    if(typeof rawName!=='string'||rawName.length>120||/[\x00-\x1f]/.test(rawName))throw new AppError('INVALID_FIELD','자료 이름을 확인하세요.');
+    const name=rawName.trim()||fallbackName;
     const s:Source={id,name,kind:'git',path:gitCachePath(config.dataDir,id),board:'',revision:'',status:'queued'};
-    const role=kb.role(body?.role||'code');kb.store.addSource(s);kb.saveConnection(id,{projectId,role,git});
-    return c.json({source:kb.source(id),job:indexer.enqueue(id)},201);
+    const role=kb.role(body?.role||'code');
+    const job=kb.db.transaction(()=>{
+      kb.store.addSource(s);kb.saveConnection(id,{projectId,role,git});
+      return indexer.enqueue(id);
+    })();
+    return c.json({source:kb.source(id),job},201);
   });
   for(const action of ['sync','retry'])app.post(`/api/v1/sources/:id/${action}`,c=>{source(c.req.param('id'));return c.json({job:indexer.enqueue(c.req.param('id'))},202);});
   app.post('/api/v1/sources/:id/settings',async c=>{
