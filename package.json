@@ -1,0 +1,11 @@
+{
+  "name": "nexa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun --no-install src/server.ts",
+    "test": "bun --no-install test ./tests"
+  },
+  "engines": { "bun": "1.4.2" }
+}

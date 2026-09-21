@@ -1,0 +1,10 @@
+.runtime/
+.models/
+vendor/
+data/
+.env
+.env.*
+!.env.example
+*.log
+.test-data/
+.qdrant-initialized
