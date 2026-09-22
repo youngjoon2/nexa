@@ -41,13 +41,15 @@ function Get-NexaOwnedProcess($Record) {
     } catch { return $null }
 }
 
-function Assert-NexaSessionSettings($State, [string]$Url, [string]$ListenAddress, [bool]$NoModels) {
+function Assert-NexaSessionSettings($State, [string]$Url, [string]$ListenAddress, [bool]$NoModels, [string]$LlmProvider = 'local') {
     if ($State.url -ne $Url) { throw "Nexa is already running at $($State.url), but $Url was requested. Stop this data directory's session before changing the address or port." }
     $modelsRunning = @($State.processes | Where-Object { $_.name -in @('generation', 'embedding', 'qdrant') }).Count -gt 0
     if ($modelsRunning -eq $NoModels) { throw "Nexa is already running with a different model mode. Stop this data directory's session before changing -NoModels." }
     # New receipts preserve the actual bind address; older receipts only have a probe URL.
     if ($State.PSObject.Properties['settings'] -and $State.settings) {
         if ($State.settings.listenAddress -ne $ListenAddress) { throw "Nexa is already running with a different -ListenAddress. Stop this data directory's session before changing its network binding." }
+        $recordedProvider = if ($State.settings.PSObject.Properties['llmProvider']) { [string]$State.settings.llmProvider } else { 'local' }
+        if ($recordedProvider -ne $LlmProvider) { throw "Nexa is already running with a different LLM provider. Stop this data directory's session before changing NEXA_LLM_PROVIDER." }
     }
 }
 

@@ -1,6 +1,7 @@
 .runtime/
 .models/
 vendor/
+node_modules/
 data/
 .env
 .env.*

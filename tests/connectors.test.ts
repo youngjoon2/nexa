@@ -128,7 +128,7 @@ describe('immutable Git object ingestion', () => {
     const result = await readGitSource({ ...settings, tagPattern: 'v?.0.0' }, options);
     expect(new TextDecoder().decode(result.files.find(file => file.path === 'src/uart.c')!.bytes)).toContain('921600');
     expect(result.warnings.some(warning => warning.includes('submodule'))).toBe(true);
-    expect(result.warnings.some(warning => warning.includes('심볼릭 링크'))).toBe(true);
+    expect(result.warnings.some(warning => warning.includes('symbolic link'))).toBe(true);
     expect(result.files.some(file => file.path === 'linked.md' || file.path === 'external-sdk')).toBe(false);
     expect(result.tags.length).toBe(2);
     const filtered = await readGitSource({ ...settings, tagPattern: 'v1.*' }, options);
@@ -138,10 +138,10 @@ describe('immutable Git object ingestion', () => {
   test('reports file count and byte limits rather than silently truncating input', async () => {
     const byteLimited = await readGitSource(settings, { ...options, maxFileBytes: 256 });
     expect(byteLimited.files.some(file => file.path === 'big.md')).toBe(false);
-    expect(byteLimited.warnings.some(warning => warning.includes('크기 제한'))).toBe(true);
+    expect(byteLimited.warnings.some(warning => warning.includes('size limit'))).toBe(true);
     const fileLimited = await readGitSource(settings, { ...options, maxFiles: 1 });
     expect(fileLimited.files.length).toBe(1);
-    expect(fileLimited.warnings.some(warning => warning.includes('파일 1개 한도'))).toBe(true);
+    expect(fileLimited.warnings.some(warning => warning.includes('file limit of 1'))).toBe(true);
   });
 
   test('refuses an unrelated cache and returns actionable errors for missing commits', async () => {

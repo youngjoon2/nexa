@@ -2,14 +2,18 @@
 param(
     [string]$CachePath = (Join-Path $env:LOCALAPPDATA 'Temp\nexa-feasibility-20260921'),
     [switch]$NoModels,
+    [switch]$ExternalLLM,
     [switch]$Offline,
     [switch]$CheckOnly
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-NexaPlatform
+$llmProvider = if ($env:NEXA_LLM_PROVIDER) { $env:NEXA_LLM_PROVIDER.Trim().ToLowerInvariant() } else { 'local' }
+if ($ExternalLLM -and $llmProvider -eq 'local') { throw 'Set NEXA_LLM_PROVIDER to openai, anthropic, or github-copilot when using -ExternalLLM.' }
+$externalLlm = $ExternalLLM -or $llmProvider -ne 'local'
 $manifestPath = Join-Path $script:NexaRoot 'config\artifacts.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$artifacts = @($manifest.artifacts | Where-Object { -not ($NoModels -and $_.model) })
+$artifacts = @($manifest.artifacts | Where-Object { -not ($NoModels -and $_.model) -and -not ($externalLlm -and $_.id -in @('qwen-part-00','qwen-part-01')) })
 $downloadRoot = Join-Path $script:NexaRoot '.runtime\downloads'
 
 function Test-ArtifactHash([string]$Path, [string]$Expected) {
@@ -103,8 +107,8 @@ function Get-Artifact($Artifact) {
 }
 
 $drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($script:NexaRoot))
-$requiredGiB = if ($NoModels) { 3 } else { 12 }
-Write-Host "Windows x64; free disk: $([Math]::Round($drive.AvailableFreeSpace / 1GB, 1)) GiB; setup requires approximately $requiredGiB GiB."
+$requiredGiB = if ($NoModels) { 3 } elseif ($externalLlm) { 6 } else { 12 }
+Write-Host "Windows x64; free disk: $([Math]::Round($drive.AvailableFreeSpace / 1GB, 1)) GiB; LLM provider: $llmProvider; setup requires approximately $requiredGiB GiB."
 if ($CheckOnly) {
     foreach ($artifact in $artifacts) {
         $cached = if ($CachePath) { Join-Path $CachePath $artifact.cache } else { '' }
@@ -151,7 +155,7 @@ try {
         }
         $installed.Add(@{ id = $artifact.id; url = $artifact.url; sha256 = $artifact.sha256; target = $artifact.target })
     }
-    if (-not $NoModels) {
+    if (-not $NoModels -and -not $externalLlm) {
         $qwenTarget = Join-Path $script:NexaRoot $manifest.qwen.target
         if (-not (Test-ArtifactHash $qwenTarget $manifest.qwen.sha256)) {
             $combinedCache = if ($CachePath) { Join-Path $CachePath 'qwen35-4b.gguf' } else { '' }
@@ -172,7 +176,7 @@ try {
         }
         if (-not (Test-ArtifactHash $qwenTarget $manifest.qwen.sha256)) { throw 'Installed Qwen model SHA256 mismatch.' }
     }
-    $receipt = @{ installedAt = [DateTime]::UtcNow.ToString('o'); manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant(); artifacts = @($installed.ToArray()); qwen = $(if (-not $NoModels) { $manifest.qwen } else { $null }) }
+    $receipt = @{ installedAt = [DateTime]::UtcNow.ToString('o'); manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant(); artifacts = @($installed.ToArray()); qwen = $(if (-not $NoModels -and -not $externalLlm) { $manifest.qwen } else { $null }) }
     [IO.File]::WriteAllText((Join-Path $script:NexaRoot '.runtime\installed.json'), ($receipt | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
     Write-Host 'Setup complete. No package registry, Hugging Face, or Ollama downloads were used.'
 } finally {

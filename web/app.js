@@ -43,11 +43,11 @@
   }
 
   function show(node, visible = true) { node.classList.toggle('hidden', !visible); }
-  function count(value) { return Number.isFinite(Number(value)) ? Number(value).toLocaleString('ko-KR') : '—'; }
+  function count(value) { return Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-US') : '—'; }
   function date(value) {
-    if (!value) return '아직 색인하지 않음';
+    if (!value) return 'Not indexed yet';
     const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? String(value) : new Intl.DateTimeFormat('ko-KR', {
+    return Number.isNaN(parsed.getTime()) ? String(value) : new Intl.DateTimeFormat('en-US', {
       month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false
     }).format(parsed);
   }
@@ -60,7 +60,7 @@
       const timeout = AbortSignal.timeout(timeoutMs);
       signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     }
-    const timeoutError = () => new Error(method === 'GET' ? '서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.' : '서버 응답 시간이 초과되었습니다. 작업이 처리되었을 수 있으니 목록과 작업 현황을 확인한 후 다시 시도해 주세요.');
+    const timeoutError = () => new Error(method === 'GET' ? 'The server took too long to respond. Try again shortly.' : 'The server took too long to respond. Check Sources and Indexing before retrying; the request may have been processed.');
     const headers = new Headers({ Accept: 'application/json' });
     if (state.apiKey) headers.set('Authorization', `Bearer ${state.apiKey}`);
     if (admin && state.adminKey) headers.set('X-Nexa-Admin-Key', state.adminKey);
@@ -75,17 +75,17 @@
     } catch (error) {
       if (error.name === 'AbortError') throw error;
       if (error.name === 'TimeoutError') throw timeoutError();
-      throw new Error('API 서버에 연결할 수 없습니다. 서버 실행 상태와 연결 설정을 확인해 주세요.');
+      throw new Error('Cannot reach the API server. Check that it is running and review your connection settings.');
     }
     let data;
     try { data = await response.json(); }
     catch (error) {
       if (signal?.reason?.name === 'TimeoutError' || error.name === 'TimeoutError') throw timeoutError();
       if (error.name === 'AbortError') throw error;
-      throw new Error(`서버가 올바른 JSON 응답을 반환하지 않았습니다. (HTTP ${response.status})`);
+      throw new Error(`The server returned an invalid JSON response. (HTTP ${response.status})`);
     }
     if (!response.ok) {
-      const error = new Error(data?.error?.message || `요청을 처리하지 못했습니다. (HTTP ${response.status})`);
+      const error = new Error(data?.error?.message || `The request could not be processed. (HTTP ${response.status})`);
       error.code = data?.error?.code;
       error.status = response.status;
       throw error;
@@ -96,7 +96,7 @@
   function toast(message, isError = false) {
     const node = el('div', `toast${isError ? ' error' : ''}`, message);
     const close = button('×', '', () => node.remove());
-    close.setAttribute('aria-label', '알림 닫기');
+    close.setAttribute('aria-label', 'Dismiss notification');
     node.append(close);
     $('#toast-container').append(node);
     setTimeout(() => node.remove(), isError ? 10000 : 6000);
@@ -110,7 +110,7 @@
   }
 
   function errorState(error, retry) {
-    const node = emptyState('불러오지 못했습니다', error.message, 'pulse', button('다시 시도', 'button button-secondary', retry, 'refresh'));
+    const node = emptyState('Could not load data', error.message, 'pulse', button('Try again', 'button button-secondary', retry, 'refresh'));
     node.classList.add('error-state');
     return node;
   }
@@ -125,7 +125,7 @@
       if (current) node.setAttribute('aria-current', 'page');
       else node.removeAttribute('aria-current');
     });
-    const label = { search: '지식 검색', sources: '자료 관리', jobs: '색인 작업' }[view];
+    const label = { search: 'Search', sources: 'Sources', jobs: 'Indexing' }[view];
     $('#breadcrumb-current').textContent = label;
     document.title = `${label} · Nexa`;
     if (updateHash && location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
@@ -141,8 +141,8 @@
       node.classList.toggle('active', active);
       node.setAttribute('aria-pressed', String(active));
     });
-    $('#search-mode-hint').textContent = mode === 'ask' ? '검색한 자료를 바탕으로 답변합니다' : '관련 코드와 문서를 직접 찾아봅니다';
-    $('#submit-query span').textContent = mode === 'ask' ? '질문하기' : '검색하기';
+    $('#search-mode-hint').textContent = mode === 'ask' ? 'Get an answer based on your sources' : 'Find relevant code and documents';
+    $('#submit-query span').textContent = mode === 'ask' ? 'Ask' : 'Search';
     window.NexaKnowledge?.modeChanged();
   }
 
@@ -165,28 +165,30 @@
       const ok = data?.services?.[service]?.ok === true;
       chip.classList.toggle('ok', !keywordOnly && ok);
       chip.classList.toggle('error', !keywordOnly && !ok);
-      $('span', chip).textContent = keywordOnly ? '사용 안 함' : ok ? '연결됨' : '연결 필요';
+      const providerNames = { local: 'Local', openai: 'OpenAI', anthropic: 'Claude', 'github-copilot': 'Copilot' };
+      const provider = providerNames[data?.generationProvider] || 'External';
+      $('span', chip).textContent = keywordOnly ? 'Disabled' : service === 'generation' && ok ? `${provider} connected` : ok ? 'Connected' : 'Disconnected';
     }
     const allOk = keywordOnly || ['generation', 'embedding', 'vector'].every(name => data?.services?.[name]?.ok === true);
     const connection = $('#server-state');
     connection.className = `connection-pill ${allOk ? 'ok' : ''}`;
-    connection.replaceChildren(el('span', `tiny-dot ${allOk ? 'ok' : 'warning'}`), document.createTextNode(keywordOnly ? '키워드 검색 사용 가능' : allOk ? '모든 서비스 연결됨' : '일부 서비스 연결 필요'));
+    connection.replaceChildren(el('span', `tiny-dot ${allOk ? 'ok' : 'warning'}`), document.createTextNode(keywordOnly ? 'Keyword search available' : allOk ? 'All services connected' : 'Some services disconnected'));
     $('#connection-dot').className = `tiny-dot ${allOk ? 'ok' : 'warning'}`;
-    $('#connection-label').textContent = allOk ? '워크스페이스 연결됨' : 'API 서버 연결됨';
-    $('#runtime-mode').textContent = keywordOnly ? '키워드 검색 모드 · AI 답변 생성은 사용하지 않습니다' : ['hybrid', 'full'].includes(data?.mode) ? '하이브리드 검색 모드' : '';
+    $('#connection-label').textContent = allOk ? 'Workspace connected' : 'API server connected';
+    $('#runtime-mode').textContent = keywordOnly ? 'Keyword search mode · AI answers disabled' : ['hybrid', 'full'].includes(data?.mode) ? 'Hybrid search mode' : '';
   }
 
   function healthUnavailable() {
     state.health = null;
     $('#server-state').className = 'connection-pill error';
-    $('#server-state').replaceChildren(el('span', 'tiny-dot error'), document.createTextNode('서버 연결 필요'));
+    $('#server-state').replaceChildren(el('span', 'tiny-dot error'), document.createTextNode('Server disconnected'));
     $('#connection-dot').className = 'tiny-dot error';
-    $('#connection-label').textContent = '서버 연결 필요';
+    $('#connection-label').textContent = 'Server disconnected';
     for (const service of ['generation', 'embedding', 'vector']) {
       const chip = $(`#service-${service}`);
       chip.classList.remove('ok');
       chip.classList.add('error');
-      $('span', chip).textContent = '확인 불가';
+      $('span', chip).textContent = 'Unknown';
     }
     for (const id of ['stat-sources', 'stat-documents', 'stat-chunks', 'nav-source-count']) $(`#${id}`).textContent = '—';
     show($('#nav-job-count'), false);
@@ -218,22 +220,22 @@
       if (version !== state.connectionSequence) return;
       if (JSON.stringify(state.meta) === JSON.stringify(data)) return;
       state.meta = data;
-      setOptions($('#board-filter'), data.boards || [], '전체 보드');
-      setOptions($('#revision-filter'), data.revisions || [], '전체 리비전');
+      setOptions($('#board-filter'), data.boards || [], 'All boards');
+      setOptions($('#revision-filter'), data.revisions || [], 'All revisions');
       for (const [id, values] of [['board-options', data.boards], ['revision-options', data.revisions]]) {
         $(`#${id}`).replaceChildren(...(values || []).map(value => new Option(value, value)));
       }
-      $('#auth-info').textContent = `${data.auth?.required ? '이 서버는 API 인증을 사용합니다.' : '이 서버는 일반 조회에 API 키를 요구하지 않습니다.'} ${data.auth?.adminConfigured ? '관리자 기능에는 관리자 키가 필요합니다.' : '관리자 키 설정 여부는 서버 운영 설정을 확인하세요.'}`;
+      $('#auth-info').textContent = `${data.auth?.required ? 'This server requires an API key.' : 'This server allows read access without an API key.'} ${data.auth?.adminConfigured ? 'Management actions require an admin key.' : 'Check the server configuration for admin key requirements.'}`;
     } catch (error) {
       if (version !== state.connectionSequence) return;
       state.meta = null;
-      $('#auth-info').textContent = error.status === 401 || error.status === 403 ? '서버 인증이 필요합니다. API 키를 입력해 주세요.' : '연결 후 서버의 인증 설정을 확인할 수 있습니다.';
+      $('#auth-info').textContent = error.status === 401 || error.status === 403 ? 'Authentication required. Enter your API key.' : 'Connect to view the server’s authentication settings.';
     }
   }
 
   function statusBadge(status) {
-    const labels = { queued: ['대기 중', 'warning'], running: ['처리 중', 'blue'], indexing: ['색인 중', 'blue'], ready: ['검색 가능', 'ok'], indexed: ['검색 가능', 'ok'], completed: ['완료', 'ok'], failed: ['실패', 'error'], cancelled: ['취소됨', ''], error: ['오류', 'error'], warning: ['진단 확인', 'warning'], pending: ['대기 중', 'warning'], empty: ['자료 없음', ''], partial: ['일부 완료', 'warning'], disabled: ['비활성', ''] };
-    const [label, type] = labels[status] || [status || '상태 미확인', ''];
+    const labels = { queued: ['Queued', 'warning'], running: ['Processing', 'blue'], indexing: ['Indexing', 'blue'], ready: ['Ready', 'ok'], indexed: ['Ready', 'ok'], completed: ['Completed', 'ok'], failed: ['Failed', 'error'], cancelled: ['Cancelled', ''], error: ['Error', 'error'], warning: ['Review diagnostics', 'warning'], pending: ['Pending', 'warning'], empty: ['Empty', ''], partial: ['Partially complete', 'warning'], disabled: ['Disabled', ''] };
+    const [label, type] = labels[status] || [status || 'Unknown', ''];
     return badge(label, type);
   }
 
@@ -242,7 +244,7 @@
     const container = $('#sources-list');
     $('#source-list-count').textContent = count(state.sources.length);
     if (!state.sources.length) {
-      container.replaceChildren(emptyState('아직 연결된 자료가 없습니다', '서버 폴더를 등록하거나 파일을 업로드하면 Nexa가 개발 지식을 색인합니다.', 'folder', button('첫 자료 연결하기', 'button button-primary', openSourceDialog, 'plus')));
+      container.replaceChildren(emptyState('No sources yet', 'Add a server folder or upload files to make them searchable.', 'folder', button('Add source', 'button button-primary', openSourceDialog, 'plus')));
       return;
     }
     container.replaceChildren(...state.sources.map(source => {
@@ -251,29 +253,29 @@
       sourceIcon.append(icon(source.kind === 'upload' ? 'upload' : 'folder'));
       const content = el('div', 'source-content');
       const titleRow = el('div', 'source-title-row');
-      titleRow.append(el('h3', '', source.name || '이름 없는 자료'), statusBadge(source.status));
-      content.append(titleRow, el('p', 'source-path', source.path || (source.kind === 'upload' ? '업로드 자료' : '')));
+      titleRow.append(el('h3', '', source.name || 'Unnamed source'), statusBadge(source.status));
+      content.append(titleRow, el('p', 'source-path', source.path || (source.kind === 'upload' ? 'Uploaded files' : '')));
       const details = el('div', 'source-details');
       const tags = el('span', 'source-tags');
       if (source.board) tags.append(badge(source.board, 'blue'));
       if (source.revision) tags.append(badge(source.revision));
       if (tags.childElementCount) details.append(tags);
-      details.append(el('span', '', `문서 ${count(source.documentCount)}`), el('span', '', `지식 조각 ${count(source.chunkCount)}`), el('span', '', `최근 색인 · ${date(source.lastIndexedAt)}`));
+      details.append(el('span', '', `Source documents: ${count(source.documentCount)}`), el('span', '', `Indexed chunks: ${count(source.chunkCount)}`), el('span', '', `Last indexed · ${date(source.lastIndexedAt)}`));
       content.append(details);
       if (source.lastError) content.append(el('p', 'source-error', source.lastError));
       const actions = el('div', 'source-actions');
-      const reindex = button('재색인', 'button button-secondary', async () => {
+      const reindex = button('Reindex', 'button button-secondary', async () => {
         reindex.disabled = true;
         try {
           await api(`/api/v1/sources/${encodeURIComponent(source.id)}/reindex`, { method: 'POST', admin: true });
-          toast('재색인 작업을 등록했습니다. 색인 작업에서 진행 상황을 확인하세요.');
+          toast('Reindexing queued. View progress in Indexing.');
           await Promise.allSettled([refreshJobs(), refreshSources(), refreshHealth()]);
         } catch (error) { toast(error.message, true); }
         finally { reindex.disabled = false; }
       }, 'refresh');
-      reindex.setAttribute('aria-label', `${source.name || '자료'} 재색인`);
-      const remove = button('삭제', 'button button-secondary delete-button', () => openDeleteDialog(source));
-      remove.setAttribute('aria-label', `${source.name || '자료'} 삭제`);
+      reindex.setAttribute('aria-label', `Reindex ${source.name || 'source'}`);
+      const remove = button('Delete', 'button button-secondary delete-button', () => openDeleteDialog(source));
+      remove.setAttribute('aria-label', `Delete ${source.name || 'source'}`);
       actions.append(reindex, remove);
       node.append(sourceIcon, content, actions);
       return node;
@@ -302,7 +304,7 @@
     const container = $('#jobs-list');
     const jobs = window.NexaKnowledge?.filterJobs(state.jobs) || state.jobs;
     if (!jobs.length) {
-      container.replaceChildren(emptyState('아직 색인 작업이 없습니다', '자료를 연결하면 분석과 색인 작업이 이곳에 표시됩니다.', 'pulse', button('자료 연결하기', 'button button-secondary', openSourceDialog, 'plus')));
+      container.replaceChildren(emptyState('No indexing jobs yet', 'Add a source to see its indexing progress here.', 'pulse', button('Add source', 'button button-secondary', openSourceDialog, 'plus')));
       return;
     }
     const expanded = new Set($$('.job-card', container).filter(card => $('details[open]', card)).map(card => card.dataset.id));
@@ -311,8 +313,8 @@
       card.dataset.id = job.id;
       const heading = el('div', 'job-heading');
       const source = state.sources.find(value => value.id === job.sourceId);
-      heading.append(el('h3', '', `${job.kind === 'version' ? 'SW 버전 보존 · ' : ''}${source?.name || `자료 ${job.sourceId || job.id}`}`), statusBadge(job.status));
-      card.append(heading, el('p', 'job-message', job.message || { queued: '작업 시작을 기다리는 중입니다.', running: '자료를 분석하고 있습니다.', completed: '색인 작업이 완료되었습니다.', failed: '색인 중 오류가 발생했습니다.' }[job.status] || ''));
+      heading.append(el('h3', '', `${job.kind === 'version' ? 'Version snapshot · ' : ''}${source?.name || `Source ${job.sourceId || job.id}`}`), statusBadge(job.status));
+      card.append(heading, el('p', 'job-message', job.message || { queued: 'Waiting to start.', running: 'Processing source files.', completed: 'Indexing complete.', failed: 'Indexing failed.' }[job.status] || ''));
       const progress = el('div', `job-progress${job.status === 'completed' ? ' complete' : ''}`);
       const processed = Math.max(0, Number(job.processed) || 0);
       const total = Math.max(0, Number(job.total) || 0);
@@ -320,20 +322,20 @@
       const bar = el('span');
       bar.style.width = `${percent}%`;
       progress.setAttribute('role', 'progressbar');
-      progress.setAttribute('aria-label', '색인 진행률');
+      progress.setAttribute('aria-label', 'Indexing progress');
       progress.setAttribute('aria-valuemin', '0');
       progress.setAttribute('aria-valuemax', '100');
       if (total > 0 || job.status === 'completed') progress.setAttribute('aria-valuenow', String(Math.round(percent)));
       progress.append(bar);
       const meta = el('div', 'job-meta');
-      meta.append(el('span', '', total > 0 ? `${count(processed)} / ${count(total)} 처리` : `${count(processed)} 처리`), el('span', '', `${date(job.createdAt)}${job.finishedAt ? ` → ${date(job.finishedAt)}` : ''}`));
+      meta.append(el('span', '', total > 0 ? `${count(processed)} / ${count(total)} processed` : `${count(processed)} processed`), el('span', '', `${date(job.createdAt)}${job.finishedAt ? ` → ${date(job.finishedAt)}` : ''}`));
       card.append(progress, meta);
       if (job.errors?.length) {
         const details = el('details', 'job-errors');
         details.open = expanded.has(job.id);
         const list = el('ul');
         list.append(...job.errors.map(error => el('li', '', error)));
-        details.append(el('summary', '', `처리 오류 ${job.errors.length}개 보기`), list);
+        details.append(el('summary', '', `View errors (${count(job.errors.length)})`), list);
         card.append(details);
       }
       return card;
@@ -359,22 +361,22 @@
 
   function locationLabel(hit) {
     const labels = [];
-    if (hit.page) labels.push(`${hit.page}페이지`);
-    if (hit.startLine) labels.push(hit.endLine && hit.endLine !== hit.startLine ? `${hit.startLine}–${hit.endLine}행` : `${hit.startLine}행`);
-    return labels.join(' · ') || '문서 보기';
+    if (hit.page) labels.push(`Page ${hit.page}`);
+    if (hit.startLine) labels.push(hit.endLine && hit.endLine !== hit.startLine ? `Lines ${hit.startLine}–${hit.endLine}` : `Line ${hit.startLine}`);
+    return labels.join(' · ') || 'View document';
   }
 
   function citationCard(hit, index) {
     const card = button('', 'citation-card', () => void openPreview(hit));
-    card.setAttribute('aria-label', `${index + 1}. ${hit.title || hit.path || '근거 문서'}, ${locationLabel(hit)} 미리보기`);
+    card.setAttribute('aria-label', `${index + 1}. Preview ${hit.title || hit.path || 'source document'}, ${locationLabel(hit)}`);
     const title = el('div', 'citation-title');
-    title.append(el('span', 'citation-number', index + 1), el('span', '', hit.title || hit.path || '근거 문서'));
+    title.append(el('span', 'citation-number', index + 1), el('span', '', hit.title || hit.path || 'Source document'));
     const excerpt = el('div', 'citation-excerpt', hit.text || '');
     const footer = el('div', 'citation-footer');
     if (hit.board) footer.append(el('span', '', hit.board));
     if (hit.revision) footer.append(el('span', '', hit.revision));
     if (state.mode === 'search' && Array.isArray(hit.channels) && hit.channels.length) {
-      footer.append(el('span', '', hit.channels.map(channel => ({ keyword: '키워드', vector: '벡터', semantic: '의미 검색', fts: '키워드' }[channel] || channel)).join(' + ')));
+      footer.append(el('span', '', hit.channels.map(channel => ({ keyword: 'Keyword', vector: 'Vector', semantic: 'Semantic', fts: 'Keyword' }[channel] || channel)).join(' + ')));
     }
     const location = el('span', 'citation-location', locationLabel(hit));
     location.append(icon('arrow'));
@@ -391,9 +393,9 @@
     show($('#overview'), false);
     const hits = mode === 'ask' ? data.citations || [] : data.hits || [];
     const toolbar = el('div', 'results-toolbar');
-    toolbar.append(el('h2', '', mode === 'ask' ? '질문에 대한 답변' : `검색 결과 ${count(hits.length)}개`));
-    const timing = Number.isFinite(data.timingMs) ? ` · ${(data.timingMs / 1000).toFixed(1)}초` : '';
-    toolbar.append(el('span', 'result-mode', `${data.mode === 'keyword' ? '키워드 검색' : data.mode === 'hybrid' ? '하이브리드 검색' : '자료 검색'}${timing}`));
+    toolbar.append(el('h2', '', mode === 'ask' ? 'Answer' : `Search results (${count(hits.length)})`));
+    const timing = Number.isFinite(data.timingMs) ? ` · ${(data.timingMs / 1000).toFixed(1)}s` : '';
+    toolbar.append(el('span', 'result-mode', `${data.mode === 'keyword' ? 'Keyword search' : data.mode === 'hybrid' ? 'Hybrid search' : 'Source search'}${timing}`));
     area.append(toolbar);
     if (Array.isArray(data.warnings) && data.warnings.length) {
       const warnings = el('div', 'warning-list');
@@ -405,36 +407,36 @@
       const card = el('article', 'answer-card');
       const heading = el('div', 'answer-heading');
       const label = el('span', 'answer-heading-label');
-      label.append(icon('spark'), document.createTextNode(data.answerable === false ? '자료에서 확인하기 어려운 질문입니다' : 'Nexa의 답변'));
+      label.append(icon('spark'), document.createTextNode(data.answerable === false ? 'Not enough information in your sources' : 'Nexa answer'));
       const copy = button('', 'icon-button', async () => {
         try {
           await navigator.clipboard.writeText(data.answer || '');
-          toast('답변을 복사했습니다.');
-        } catch { toast('복사 권한이 없습니다. 답변을 직접 선택해 복사해 주세요.', true); }
+          toast('Answer copied.');
+        } catch { toast('Clipboard access was denied. Select the answer text to copy it manually.', true); }
       }, 'copy');
-      copy.title = '답변 복사';
-      copy.setAttribute('aria-label', '답변 복사');
+      copy.title = 'Copy answer';
+      copy.setAttribute('aria-label', 'Copy answer');
       heading.append(label, copy);
-      const text = el('div', 'answer-text', data.answer || '서버가 답변 내용을 반환하지 않았습니다.');
+      const text = el('div', 'answer-text', data.answer || 'The server returned no answer.');
       const note = el('div', 'answer-note');
-      note.append(icon('shield'), document.createTextNode('자동 생성된 답변입니다. 아래 자료에서 구현과 사양을 확인하세요.'));
+      note.append(icon('shield'), document.createTextNode('AI-generated answer. Check the source documents below for implementation details and specifications.'));
       card.append(heading, text, note);
       area.append(card);
       if (hits.length) {
         const heading = el('h3', 'citations-heading');
-        heading.append(icon('doc'), document.createTextNode(`답변의 근거 · ${hits.length}개 자료`));
+        heading.append(icon('doc'), document.createTextNode(`Source documents (${count(hits.length)})`));
         const grid = el('div', 'citation-grid');
         grid.append(...hits.map(citationCard));
         area.append(heading, grid);
       } else {
-        area.append(el('p', 'form-note', '이번 답변에 연결된 근거 자료가 없습니다. 자료 등록 상태와 검색 조건을 확인해 주세요.'));
+        area.append(el('p', 'form-note', 'No source documents were linked to this answer. Check your sources and search filters.'));
       }
     } else if (hits.length) {
       const list = el('div', 'result-list');
       list.append(...hits.map(citationCard));
       area.append(list);
     } else {
-      area.append(emptyState('일치하는 자료를 찾지 못했습니다', '다른 표현으로 검색하거나 보드·리비전 필터를 넓혀 보세요. 필요한 자료가 색인되어 있는지도 확인해 주세요.', 'search'));
+      area.append(emptyState('No matching sources', 'Try different search terms or broaden the board and revision filters. Check that the sources you need have been indexed.', 'search'));
     }
   }
 
@@ -473,9 +475,9 @@
     event?.preventDefault();
     if (state.mode === 'ask' && window.NexaKnowledge) return window.NexaKnowledge.submitQuery();
     const query = $('#query').value.trim();
-    if (!query) { queryStatus('검색하거나 질문할 내용을 입력해 주세요.', { error: true }); $('#query').focus(); return; }
+    if (!query) { queryStatus('Enter a question or search term.', { error: true }); $('#query').focus(); return; }
     if (state.queryController) return;
-    if (query.length > 1200) { queryStatus('질문은 1,200자 이하로 입력해 주세요.', { error: true }); return; }
+    if (query.length > 1200) { queryStatus('Use 1,200 characters or fewer.', { error: true }); return; }
     const sequence = ++state.querySequence;
     const mode = state.mode;
     const controller = new AbortController();
@@ -483,12 +485,12 @@
     setQueryBusy(true);
     show($('#results-area'), false);
     show($('#overview'), false);
-    queryStatus(mode === 'ask' ? '관련 자료를 검색하고 답변을 생성하고 있습니다…' : '관련 코드와 문서를 검색하고 있습니다…', { loading: true });
+    queryStatus(mode === 'ask' ? 'Searching sources and generating an answer…' : 'Searching code and documents…', { loading: true });
     const started = performance.now();
     const slowTimer = setInterval(() => {
       if (sequence !== state.querySequence) return;
       const elapsed = Math.floor((performance.now() - started) / 1000);
-      if (elapsed >= 15) queryStatus(`${mode === 'ask' ? '답변 생성' : '검색'}이 진행 중입니다. ${elapsed}초 경과${mode === 'ask' ? ' · 모델 준비나 대기열에 따라 시간이 걸릴 수 있습니다.' : ''}`, { loading: true });
+      if (elapsed >= 15) queryStatus(`${mode === 'ask' ? 'Generating an answer' : 'Searching'} · ${elapsed}s elapsed${mode === 'ask' ? ' · Model startup and queued requests may take a little longer.' : ''}`, { loading: true });
     }, 5000);
     try {
       const body = { query, limit: 6 };
@@ -498,14 +500,14 @@
       const data = await api(`/api/v1/${mode}`, { method: 'POST', body, signal: controller.signal });
       if (sequence !== state.querySequence) return;
       renderResults(data, mode);
-      queryStatus(mode === 'ask' ? '답변을 확인해 주세요.' : `검색을 완료했습니다. ${count(data.hits?.length || 0)}개 결과가 있습니다.`);
+      queryStatus(mode === 'ask' ? 'Answer ready.' : `Search complete. Results: ${count(data.hits?.length || 0)}.`);
       window.NexaKnowledge?.decorateResults(data, body);
     } catch (error) {
       if (sequence !== state.querySequence) return;
       if (error.name === 'AbortError') {
-        queryStatus('요청을 취소했습니다. 다른 질문을 입력할 수 있습니다.');
+        queryStatus('Request cancelled. You can enter another question.');
       } else {
-        const authNote = error.status === 401 || error.status === 403 ? ' 연결 설정에서 API 키를 확인해 주세요.' : '';
+        const authNote = error.status === 401 || error.status === 403 ? ' Check your API key in Connection settings.' : '';
         queryStatus(`${error.message}${authNote}`, { error: true });
       }
     } finally {
@@ -521,14 +523,14 @@
     if (state.previewController) state.previewController.abort();
     const controller = new AbortController();
     state.previewController = controller;
-    $('#preview-title').textContent = hit.title || '문서 미리보기';
+    $('#preview-title').textContent = hit.title || 'Document preview';
     $('#preview-meta').textContent = [hit.path, [hit.board, hit.revision, locationLabel(hit)].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
-    $('#preview-body').replaceChildren(el('div', 'preview-message', '문서를 불러오는 중입니다…'));
+    $('#preview-body').replaceChildren(el('div', 'preview-message', 'Loading document…'));
     if (!$('#preview-dialog').open) $('#preview-dialog').showModal();
     try {
       const data = await api(`/api/v1/documents/${encodeURIComponent(hit.documentId)}`, { signal: controller.signal });
       if (state.previewController !== controller) return;
-      $('#preview-title').textContent = data.title || hit.title || '문서 미리보기';
+      $('#preview-title').textContent = data.title || hit.title || 'Document preview';
       const lines = String(data.text || '').split('\n');
       const pageSize = 600;
       let offset = !hit.page && hit.startLine ? Math.floor(Math.max(0, Math.min(hit.startLine - 1, lines.length - 1)) / pageSize) * pageSize : 0;
@@ -547,14 +549,14 @@
         pre.append(fragment);
         const body = $('#preview-body');
         body.replaceChildren(pre);
-        if (hit.page) body.prepend(el('div', 'preview-message', `검색 근거는 ${hit.page}페이지입니다. 아래 내용은 추출한 텍스트이며 원본 페이지 레이아웃과 다를 수 있습니다.`));
+        if (hit.page) body.prepend(el('div', 'preview-message', `The search result is on page ${hit.page}. The extracted text below may differ from the original page layout.`));
         if (lines.length > pageSize) {
           const navigation = el('div', 'preview-pagination');
-          const previous = button('이전 구간', 'button button-secondary', () => { offset = Math.max(0, offset - pageSize); renderLines(); });
-          const next = button('다음 구간', 'button button-secondary', () => { offset += pageSize; renderLines(); });
+          const previous = button('Previous', 'button button-secondary', () => { offset = Math.max(0, offset - pageSize); renderLines(); });
+          const next = button('Next', 'button button-secondary', () => { offset += pageSize; renderLines(); });
           previous.disabled = offset === 0;
           next.disabled = offset + pageSize >= lines.length;
-          navigation.append(previous, el('span', '', `${count(offset + 1)}–${count(Math.min(offset + pageSize, lines.length))} / ${count(lines.length)}행`), next);
+          navigation.append(previous, el('span', '', `Lines ${count(offset + 1)}–${count(Math.min(offset + pageSize, lines.length))} of ${count(lines.length)}`), next);
           body.prepend(navigation);
         }
         body.scrollTop = 0;
@@ -633,7 +635,7 @@
     else Object.assign(body, extra);
     state.sourceBusy = true;
     setDialogBusy($('#source-dialog'), true);
-    $('#submit-source').textContent = type === 'upload' ? '업로드 중…' : '자료 연결 중…';
+    $('#submit-source').textContent = type === 'upload' ? 'Uploading…' : 'Adding source…';
     show($('#source-error'), false);
     try {
       await api(`/api/v1/sources/${type}`, { method: 'POST', body, admin: true });
@@ -642,7 +644,7 @@
       $('#source-dialog').close();
       $('#source-form').reset();
       setSourceType('folder');
-      toast('자료를 연결했습니다. 색인 작업이 시작됩니다.');
+      toast('Source added. Indexing will start shortly.');
       setView('sources');
       void Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
     } catch (error) {
@@ -651,13 +653,13 @@
     } finally {
       state.sourceBusy = false;
       setDialogBusy($('#source-dialog'), false);
-      $('#submit-source').textContent = '연결하고 색인하기';
+      $('#submit-source').textContent = 'Add and index';
     }
   }
 
   function openDeleteDialog(source) {
     state.deletingSource = source;
-    $('#confirm-description').textContent = `“${source.name || '이 자료'}”의 연결과 검색 색인을 삭제합니다. ${source.kind === 'upload' ? '서버에 업로드한 파일도 함께 삭제됩니다.' : '등록한 원본 폴더의 파일은 유지됩니다.'}`;
+    $('#confirm-description').textContent = `Delete “${source.name || 'this source'}” and its search index? ${source.kind === 'upload' ? 'Files uploaded to the server will also be deleted.' : 'Files in the original source folder will be kept.'}`;
     show($('#delete-error'), false);
     $('#confirm-dialog').showModal();
   }
@@ -671,7 +673,7 @@
       await api(`/api/v1/sources/${encodeURIComponent(source.id)}`, { method: 'DELETE', admin: true });
       $('#confirm-dialog').close();
       state.deletingSource = null;
-      toast('자료 연결과 검색 색인을 삭제했습니다.');
+      toast('Source and search index deleted.');
       void Promise.allSettled([refreshSources(), refreshJobs(), refreshHealth(), refreshMeta()]);
     } catch (error) {
       $('#delete-error').textContent = error.message;
@@ -695,7 +697,7 @@
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
         base = url.href.replace(/\/+$/, '');
       } catch {
-        $('#setting-base').setCustomValidity('사용자 정보, 쿼리, 해시가 없는 http 또는 https 주소를 입력하세요.');
+        $('#setting-base').setCustomValidity('Enter an HTTP or HTTPS URL without credentials, a query string, or a fragment.');
         $('#setting-base').reportValidity();
         return;
       }
@@ -714,14 +716,14 @@
     state.jobs = [];
     state.meta = null;
     healthUnavailable();
-    setOptions($('#board-filter'), [], '전체 보드');
-    setOptions($('#revision-filter'), [], '전체 리비전');
+    setOptions($('#board-filter'), [], 'All boards');
+    setOptions($('#revision-filter'), [], 'All revisions');
     $('#board-options').replaceChildren();
     $('#revision-options').replaceChildren();
     show($('#results-area'), false);
     show($('#overview'));
     $('#settings-dialog').close();
-    toast('연결 설정을 저장했습니다. 서버 상태를 확인합니다.');
+    toast('Connection settings saved. Checking server status.');
     await Promise.allSettled([refreshHealth(), refreshMeta(), refreshSources(), refreshJobs(), window.NexaKnowledge?.connectionChanged()]);
   }
 
@@ -736,7 +738,7 @@
   }
 
   $$('.nav-item[data-view]').forEach(node => {
-    node.setAttribute('aria-label', { search: '지식 검색', sources: '자료 관리', jobs: '색인 작업' }[node.dataset.view]);
+    node.setAttribute('aria-label', { search: 'Search', sources: 'Sources', jobs: 'Indexing' }[node.dataset.view]);
     node.addEventListener('click', () => setView(node.dataset.view));
   });
   $$('[data-navigate]').forEach(node => node.addEventListener('click', () => setView(node.dataset.navigate)));
@@ -768,11 +770,11 @@
   $('#refresh-jobs').addEventListener('click', () => void refreshJobs());
   $('#confirm-delete').addEventListener('click', deleteSource);
   $('#open-settings').addEventListener('click', openSettings);
-  $('#open-settings').setAttribute('aria-label', '연결 설정');
+  $('#open-settings').setAttribute('aria-label', 'Connection settings');
   $('#settings-form').addEventListener('submit', saveSettings);
-  $('#board-filter').setAttribute('aria-label', '보드');
-  $('#revision-filter').setAttribute('aria-label', '리비전');
-  for (const [id, label] of [['settings-dialog', '연결 설정'], ['source-dialog', '자료 연결'], ['preview-dialog', '문서 미리보기'], ['confirm-dialog', '자료 삭제 확인']]) $(`#${id}`).setAttribute('aria-label', label);
+  $('#board-filter').setAttribute('aria-label', 'Board');
+  $('#revision-filter').setAttribute('aria-label', 'Revision');
+  for (const [id, label] of [['settings-dialog', 'Connection settings'], ['source-dialog', 'Add source'], ['preview-dialog', 'Document preview'], ['confirm-dialog', 'Confirm source deletion']]) $(`#${id}`).setAttribute('aria-label', label);
   $('#setting-base').addEventListener('input', () => $('#setting-base').setCustomValidity(''));
   window.addEventListener('hashchange', () => setView(location.hash.slice(1), false));
   document.addEventListener('keydown', event => {

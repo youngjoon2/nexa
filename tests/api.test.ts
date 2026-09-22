@@ -172,7 +172,7 @@ describe("folder indexing through the API", () => {
     expect(runtime.store.counts().documents).toBe(1);
     const unanswered = await request("/api/v1/ask", "POST", { query: "ORIGINAL_UART_CR" });
     expect(unanswered.status).toBe(200);
-    expect(await unanswered.json()).toMatchObject({ answerable: false, citations: [], answer: "자료에서 확인할 수 없습니다." });
+    expect(await unanswered.json()).toMatchObject({ answerable: false, citations: [], answer: "The available sources do not answer this question." });
     // A valid current hit cannot produce a made-up successful AI answer in keyword mode.
     const disabledAnswer = await request("/api/v1/ask", "POST", { query: "UPDATED_UART_CR" });
     expect(disabledAnswer.status).toBe(503);

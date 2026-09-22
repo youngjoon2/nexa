@@ -23,7 +23,7 @@ test('legacy migration backs up the old database and requires real source sync f
     try {expect((backup.query('SELECT count(*) n FROM documents').get() as any).n).toBe(1);expect(backup.query("SELECT name FROM sqlite_master WHERE name='kb_projects'").get()).toBeNull();}finally{backup.close();}
     const kb=runtime.knowledge,oldId=kb.connection('legacy').snapshotId!;
     expect(kb.snapshot(oldId)?.legacy).toBe(true);expect(kb.versions('default')).toHaveLength(0);expect(kb.lexical({query:'OLD_EXTRACTED'})).toHaveLength(1);
-    expect(()=>kb.saveVersion({projectId:'default',name:'not-original-bytes',snapshots:{legacy:oldId}})).toThrow('원문');
+    expect(()=>kb.saveVersion({projectId:'default',name:'not-original-bytes',snapshots:{legacy:oldId}})).toThrow('original');
     expect(kb.pendingEmbeddings()).toBe(0);
     runtime.indexer.enqueue('legacy');const deadline=Date.now()+10000;
     while(runtime.indexer.state().running||runtime.indexer.state().queued){if(Date.now()>deadline)throw new Error('Migration resync timeout');await Bun.sleep(10);}

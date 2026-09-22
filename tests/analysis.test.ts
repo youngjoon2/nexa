@@ -110,7 +110,7 @@ test('intentional keyword search skips model services while full-mode fallback p
     expect(result.mode).toBe('keyword');
     expect(result.hits).toHaveLength(1);
     expect(result.warnings).toContain('spec: 일부 문서를 읽지 못했습니다.');
-    expect(result.warnings.some(warning=>warning.includes('임베딩 또는 벡터 서비스'))).toBe(mode==='full');
+    expect(result.warnings.some(warning=>warning.includes('embedding or vector service'))).toBe(mode==='full');
     expect(embeddingCalls).toBe(mode==='keyword'?0:1);
     expect(vectorCalls).toBe(0);
   }
@@ -216,7 +216,7 @@ test('code evidence quotes must contain the exact requested identifier even when
   const hit={id:'chunk',documentId:'doc',text:'int TRACE_EXPORT(void) { return 1; }\nint uart_ready(void) { return 1; }\nint TRACE_EXPORT_V2(void) { return 1; }'} as Hit;
   const context=new Map([['E1',hit]]);
   for(const quote of ['int uart_ready(void) { return 1; }','int TRACE_EXPORT_V2(void) { return 1; }'])
-    expect(()=>validateFeatureEvidence({evidence:[{id:'E1',quote,support:'present'}]},context,['TRACE_EXPORT'])).toThrow('식별자');
+    expect(()=>validateFeatureEvidence({evidence:[{id:'E1',quote,support:'present'}]},context,['TRACE_EXPORT'])).toThrow('identifier');
   expect(validateFeatureEvidence({evidence:[{id:'E1',quote:'int TRACE_EXPORT(void) { return 1; }',support:'present'}]},context,['TRACE_EXPORT']).state).toBe('supported');
 });
 
@@ -281,7 +281,7 @@ test('ambiguous document keys are not guessed and unilateral summaries cannot cl
   const m=manager(p);const job=await finished(m,m.enqueue({projectId:'default',query:'Clock',mode:'compare',versionIds:[a.id,b.id]}).id);
   expect(job.status).toBe('completed');expect(job.result.documents[0].summaries).toEqual([]);
   expect(job.result.documents[0].hunks.length).toBeGreaterThan(0);
-  expect(job.result.documents[0].warnings.join(' ')).toContain('양쪽');
+  expect(job.result.documents[0].warnings.join(' ')).toContain('both versions');
 });
 
 test('query planning resolves exact registered labels in request order and asks on ambiguous scope',async()=>{

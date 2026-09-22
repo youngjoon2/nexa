@@ -16,6 +16,8 @@ export type SoftwareVersion = {id:string;projectId:string;name:string;createdAt:
 export type Candidate = {id:string;projectId:string;sourceId:string;name:string;commit:string;createdAt:string;status:'pending'|'confirmed';snapshots:Record<string,string>;warnings:string[];automatic:boolean;versionId?:string};
 export type SnapshotFile = {path:string;parsedKey:string;rawHash:string;moduleId?:string;role?:Role;logicalKey?:string};
 const now=()=>new Date().toISOString();
+// Normalize only the old generated label; keep stored and user-authored names intact.
+const displayProject=(project:Project):Project=>project.id==='default'&&project.name==='기본 프로젝트'?{...project,name:'Default project'}:project;
 export const hashOf=(input:string|Uint8Array)=>createHash('sha256').update(input).digest('hex');
 export function contentId(input:string) {const h=hashOf(input);return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;}
 export function matchesPattern(path:string,pattern:string) {
@@ -23,7 +25,7 @@ export function matchesPattern(path:string,pattern:string) {
   const escaped=pattern.replaceAll('\\','/').split('**').map(p=>p.split('*').map(q=>q.replace(/[.+?^${}()|[\]\\]/g,'\\$&')).join('[^/]*')).join('.*');
   return new RegExp('^'+escaped+'$','i').test(path.replaceAll('\\','/'));
 }
-function label(value:unknown,name:string,max=120):string {if(typeof value!=='string'||!value.trim()||value.length>max||/[\x00-\x1f]/.test(value))throw new AppError('INVALID_FIELD',`${name}을 확인하세요.`);return value.trim();}
+function label(value:unknown,name:string,max=120):string {if(typeof value!=='string'||!value.trim()||value.length>max||/[\x00-\x1f]/.test(value))throw new AppError('INVALID_FIELD',`Enter a valid ${name}.`);return value.trim();}
 const hitColumns='SELECT c.id chunkId,c.text,c.title,c.data chunkData,f.id fileId,f.sourceId,f.path,f.snapshotId,f.moduleId,f.role,f.board,f.revision';
 
 /** Immutable source snapshots share parsed content and embedding inputs across versions. */
@@ -60,27 +62,27 @@ export class KnowledgeBase {
       CREATE TABLE IF NOT EXISTS kb_snapshot_indexes(snapshotId TEXT PRIMARY KEY,derivedSnapshotId TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS kb_blob_deletes(rawHash TEXT PRIMARY KEY);
     `);
-    this.db.query('INSERT OR IGNORE INTO kb_projects VALUES(?,?,?)').run('default','기본 프로젝트',now());
+    this.db.query('INSERT OR IGNORE INTO kb_projects VALUES(?,?,?)').run('default','Default project',now());
     if(!installed)this.importLegacy();
   }
-  projects():Project[]{return this.db.query('SELECT * FROM kb_projects ORDER BY createdAt,id').all() as Project[];}
-  project(id:string) {return this.db.query('SELECT * FROM kb_projects WHERE id=?').get(id) as Project|null;}
-  addProject(name:unknown) {const p={id:crypto.randomUUID(),name:label(name,'프로젝트 이름'),createdAt:now()};if(this.projects().some(x=>x.name===p.name))throw new AppError('DUPLICATE_PROJECT','같은 이름의 프로젝트가 있습니다.',409);this.db.query('INSERT INTO kb_projects VALUES(?,?,?)').run(p.id,p.name,p.createdAt);return p;}
+  projects():Project[]{return (this.db.query('SELECT * FROM kb_projects ORDER BY createdAt,id').all() as Project[]).map(displayProject);}
+  project(id:string) {const project=this.db.query('SELECT * FROM kb_projects WHERE id=?').get(id) as Project|null;return project?displayProject(project):null;}
+  addProject(name:unknown) {const p={id:crypto.randomUUID(),name:label(name,'project name'),createdAt:now()};if(this.projects().some(x=>x.name===p.name))throw new AppError('DUPLICATE_PROJECT','A project with this name already exists.',409);this.db.query('INSERT INTO kb_projects VALUES(?,?,?)').run(p.id,p.name,p.createdAt);return p;}
   modules(projectId:string):Module[]{return this.db.query('SELECT data FROM kb_modules WHERE projectId=? ORDER BY rowid').all(projectId).map((r:any)=>JSON.parse(r.data));}
   addModule(projectId:string,body:any,id?:string) {
-    this.requireProject(projectId);const name=label(body?.name,'모듈 이름');
-    if(!Array.isArray(body.rules)||!body.rules.length||body.rules.length>100)throw new AppError('INVALID_RULES','모듈 경로 규칙 1~100개를 지정하세요.');
+    this.requireProject(projectId);const name=label(body?.name,'module name');
+    if(!Array.isArray(body.rules)||!body.rules.length||body.rules.length>100)throw new AppError('INVALID_RULES','Provide 1 to 100 module path rules.');
     const rules=body.rules.map((r:any)=>{
-      if(!r||typeof r!=='object'||Array.isArray(r))throw new AppError('INVALID_RULES','모듈 경로 규칙을 확인하세요.');
-      return {pattern:label(r.pattern,'경로 규칙',512),...(r.sourceId?{sourceId:label(r.sourceId,'자료 연결 ID')} :{}),...(r.role?{role:this.role(r.role)}:{})};
+      if(!r||typeof r!=='object'||Array.isArray(r))throw new AppError('INVALID_RULES','Provide valid module path rules.');
+      return {pattern:label(r.pattern,'path rule',512),...(r.sourceId?{sourceId:label(r.sourceId,'source connection ID')} :{}),...(r.role?{role:this.role(r.role)}:{})};
     });
-    for(const r of rules)if(r.sourceId&&this.connection(r.sourceId).projectId!==projectId)throw new AppError('INVALID_RULES','다른 프로젝트의 자료입니다.');
-    if(id&&!this.modules(projectId).some(m=>m.id===id))throw new AppError('NOT_FOUND','모듈을 찾을 수 없습니다.',404);
-    if(this.modules(projectId).some(m=>m.name===name&&m.id!==id))throw new AppError('DUPLICATE_MODULE','같은 이름의 모듈이 있습니다.',409);
+    for(const r of rules)if(r.sourceId&&this.connection(r.sourceId).projectId!==projectId)throw new AppError('INVALID_RULES','This source belongs to another project.');
+    if(id&&!this.modules(projectId).some(m=>m.id===id))throw new AppError('NOT_FOUND','Module not found.',404);
+    if(this.modules(projectId).some(m=>m.name===name&&m.id!==id))throw new AppError('DUPLICATE_MODULE','A module with this name already exists.',409);
     const m:Module={id:id||crypto.randomUUID(),projectId,name,rules};this.db.query('INSERT INTO kb_modules VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET projectId=excluded.projectId,data=excluded.data').run(m.id,projectId,JSON.stringify(m));return m;
   }
-  role(value:unknown):Role {if(value!==undefined&&!['code','spec','reference'].includes(String(value)))throw new AppError('INVALID_ROLE','자료 종류를 확인하세요.');return value as Role||'spec';}
-  requireProject(id:string) {if(!this.project(id))throw new AppError('NOT_FOUND','프로젝트를 찾을 수 없습니다.',404);}
+  role(value:unknown):Role {if(value!==undefined&&!['code','spec','reference'].includes(String(value)))throw new AppError('INVALID_ROLE','Select a valid source role.');return value as Role||'spec';}
+  requireProject(id:string) {if(!this.project(id))throw new AppError('NOT_FOUND','Project not found.',404);}
   connection(sourceId:string):Connection {
     const r=this.db.query('SELECT data FROM kb_connections WHERE sourceId=?').get(sourceId) as any;
     return r?JSON.parse(r.data):{projectId:'default',role:'spec',paused:false,errors:[]};
@@ -113,7 +115,7 @@ export class KnowledgeBase {
     }
   }
   putRaw(bytes:Uint8Array) {const hash=hashOf(bytes);const path=join(this.blobDir,hash);if(!existsSync(path)){writeFileSync(path,bytes,{flag:'wx'});this.db.query('INSERT OR IGNORE INTO kb_blob_deletes VALUES(?)').run(hash);}return hash;}
-  raw(hash:string) {if(!/^[a-f0-9]{64}$/.test(hash))throw new AppError('INVALID_HASH','잘못된 원문 참조입니다.');return new Uint8Array(readFileSync(join(this.blobDir,hash)));}
+  raw(hash:string) {if(!/^[a-f0-9]{64}$/.test(hash))throw new AppError('INVALID_HASH','Invalid original file reference.');return new Uint8Array(readFileSync(join(this.blobDir,hash)));}
   parsedKey(rawHash:string,profile:string,name='') {return hashOf(rawHash+'\0'+profile+'\0'+name);}
   parsed(key:string):ParsedDocument|null {const row=this.db.query('SELECT data FROM kb_parsed WHERE key=?').get(key) as any;return row?JSON.parse(row.data):null;}
   putParsed(bytes:Uint8Array,parsed:ParsedDocument,profile:string,name='') {
@@ -147,30 +149,30 @@ export class KnowledgeBase {
     const sources=new Set<string>();
     this.db.transaction(()=>{for(const [original,derived] of Object.entries(bindings)){
       const before=this.snapshot(original),s=this.snapshot(derived);
-      if(!before||!s?.complete||s.derivedFrom!==original||s.sourceId!==before.sourceId||s.projectId!==before.projectId)throw new AppError('INVALID_INDEX','재처리된 색인이 원본 스냅샷과 일치하지 않습니다.',409);
+      if(!before||!s?.complete||s.derivedFrom!==original||s.sourceId!==before.sourceId||s.projectId!==before.projectId)throw new AppError('INVALID_INDEX','The rebuilt index does not match the original snapshot.',409);
       const manifest=(id:string)=>JSON.stringify(this.snapshotFiles(id).map(f=>[f.path,f.rawHash,f.moduleId,f.role,f.logicalKey,f.board,f.revision]));
-      if(manifest(original)!==manifest(derived))throw new AppError('INVALID_INDEX','재처리 중 보존 원문 또는 메타데이터가 변경되었습니다.',409);
+      if(manifest(original)!==manifest(derived))throw new AppError('INVALID_INDEX','The preserved originals or metadata changed during reprocessing.',409);
       this.db.query('INSERT OR REPLACE INTO kb_snapshot_indexes VALUES(?,?)').run(original,derived);sources.add(before.sourceId);
     }})();
     // Reprocessing does not activate a live connection; explicitly retire superseded derived indexes.
     for(const sourceId of sources)this.prune(sourceId);
   }
   snapshotFiles(id:string) {return this.db.query('SELECT * FROM kb_files WHERE snapshotId=? ORDER BY path').all(id) as (SnapshotFile&{id:string;sourceId:string;board:string;revision:string})[];}
-  activate(sourceId:string,id:string) {const s=this.snapshot(id);if(!s||s.sourceId!==sourceId)throw new AppError('INVALID_SNAPSHOT','자료 스냅샷이 일치하지 않습니다.');this.saveConnection(sourceId,{snapshotId:id,errors:s.errors,unavailable:false,stalePaths:[],lastCheckedAt:now()});this.prune(sourceId);}
+  activate(sourceId:string,id:string) {const s=this.snapshot(id);if(!s||s.sourceId!==sourceId)throw new AppError('INVALID_SNAPSHOT','The source snapshot does not match.');this.saveConnection(sourceId,{snapshotId:id,errors:s.errors,unavailable:false,stalePaths:[],lastCheckedAt:now()});this.prune(sourceId);}
   recordFailure(sourceId:string,errors:string[]) {this.saveConnection(sourceId,{errors,unavailable:true,lastCheckedAt:now()});}
   scopeInfo(input:KnowledgeSearchInput) {
     const version=input.versionId?this.version(input.versionId):null;
-    if(input.versionId&&!version)throw new AppError('NOT_FOUND','SW 버전을 찾을 수 없습니다.',404);
+    if(input.versionId&&!version)throw new AppError('NOT_FOUND','Software version not found.',404);
     const projectId=input.projectId||version?.projectId||'default';this.requireProject(projectId);
-    if(version&&version.projectId!==projectId)throw new AppError('INVALID_SCOPE','다른 프로젝트의 SW 버전입니다.');
-    if(input.moduleId&&!this.modules(projectId).some(x=>x.id===input.moduleId))throw new AppError('INVALID_SCOPE','모듈을 찾을 수 없습니다.');
+    if(version&&version.projectId!==projectId)throw new AppError('INVALID_SCOPE','This software version belongs to another project.');
+    if(input.moduleId&&!this.modules(projectId).some(x=>x.id===input.moduleId))throw new AppError('INVALID_SCOPE','Module not found.');
     const warnings:string[]=[];let failed=0;
     const snapshotIds=version?Object.values(version.snapshots).map(id=>this.indexedSnapshot(id)):this.sources().filter(s=>s.projectId===projectId).flatMap(s=>{
       const c=this.connection(s.id);if(c.errors.length){warnings.push(`${s.name}: ${c.errors.slice(0,2).join('; ')}`);failed+=c.errors.length;}
-      if(c.unavailable){warnings.push(`${s.name}: 최신 상태를 확인할 수 없어 최신 검색에서 제외했습니다.`);return [];}
+      if(c.unavailable){warnings.push(`${s.name}: Excluded from searches of current sources because its latest state could not be verified.`);return [];}
       return c.snapshotId?[c.snapshotId]:[];
     });
-    for(const id of snapshotIds){const s=this.snapshot(id);if(s?.errors.length&&version){warnings.push(...s.errors);failed+=s.errors.length;}if(s?.legacy)warnings.push('이관된 추출 텍스트입니다. 원문 재동기화 전까지 원본 파일 재현을 보장하지 않습니다.');}
+    for(const id of snapshotIds){const s=this.snapshot(id);if(s?.errors.length&&version){warnings.push(...s.errors);failed+=s.errors.length;}if(s?.legacy)warnings.push('This is migrated extracted text. Sync the source again to preserve its original files.');}
     const filters=(['moduleId','role','board','revision'] as const).filter(key=>input[key]);
     const documents=snapshotIds.length?(this.db.query(`SELECT count(*) n FROM kb_files WHERE snapshotId IN (${snapshotIds.map(()=>'?').join(',')})${filters.map(key=>` AND ${key}=?`).join('')}`).get(...snapshotIds,...filters.map(key=>input[key]!)) as any).n:0;
     return {snapshotIds,warnings:[...new Set(warnings)],coverage:{documents,failed},projectId};
@@ -208,15 +210,15 @@ export class KnowledgeBase {
   versions(projectId:string):SoftwareVersion[]{return this.db.query('SELECT data FROM kb_versions WHERE projectId=? ORDER BY rowid').all(projectId).map((r:any)=>JSON.parse(r.data));}
   version(id:string):SoftwareVersion|null {const r=this.db.query('SELECT data FROM kb_versions WHERE id=?').get(id) as any;return r?JSON.parse(r.data):null;}
   saveVersion(input:{projectId:string;name:string;snapshots:Record<string,string>;parentVersionId?:string;notes?:string}) {
-    this.requireProject(input.projectId);const name=label(input.name,'SW 버전 이름');
-    if(this.versions(input.projectId).some(v=>v.name===name))throw new AppError('DUPLICATE_VERSION','같은 이름의 SW 버전이 있습니다.',409);
-    if(!Object.keys(input.snapshots).length)throw new AppError('EMPTY_VERSION','보존할 자료가 없습니다.');
-    if(input.parentVersionId&&this.version(input.parentVersionId)?.projectId!==input.projectId)throw new AppError('INVALID_PARENT','이전 자료 개정본을 확인하세요.');
-    for(const [sourceId,id] of Object.entries(input.snapshots)){const s=this.snapshot(id);if(!s||s.sourceId!==sourceId||s.projectId!==input.projectId||!s.complete)throw new AppError('INCOMPLETE_VERSION','자료 동기화 오류를 해결한 뒤 버전을 확정하세요.',409);if(s.legacy)throw new AppError('LEGACY_SNAPSHOT','이관된 추출 텍스트는 원문 보존 버전으로 확정할 수 없습니다. 원문을 동기화한 스냅샷을 선택하세요.',409);}
+    this.requireProject(input.projectId);const name=label(input.name,'software version name');
+    if(this.versions(input.projectId).some(v=>v.name===name))throw new AppError('DUPLICATE_VERSION','A software version with this name already exists.',409);
+    if(!Object.keys(input.snapshots).length)throw new AppError('EMPTY_VERSION','There are no sources to preserve.');
+    if(input.parentVersionId&&this.version(input.parentVersionId)?.projectId!==input.projectId)throw new AppError('INVALID_PARENT','Select a valid previous revision.');
+    for(const [sourceId,id] of Object.entries(input.snapshots)){const s=this.snapshot(id);if(!s||s.sourceId!==sourceId||s.projectId!==input.projectId||!s.complete)throw new AppError('INCOMPLETE_VERSION','Resolve source sync errors before confirming this version.',409);if(s.legacy)throw new AppError('LEGACY_SNAPSHOT','Migrated extracted text cannot be confirmed as a version with preserved originals. Select a snapshot synced from the original files.',409);}
     const version:SoftwareVersion={...input,name,id:crypto.randomUUID(),createdAt:now(),status:'confirmed'};
     this.db.query('INSERT INTO kb_versions VALUES(?,?,?,?)').run(version.id,version.projectId,name,JSON.stringify(version));return version;
   }
-  deleteVersion(id:string) {const v=this.version(id);if(!v)throw new AppError('NOT_FOUND','SW 버전을 찾을 수 없습니다.',404);if(this.db.query("SELECT id FROM kb_versions WHERE json_extract(data,'$.parentVersionId')=?").get(id))throw new AppError('VERSION_REFERENCED','후속 개정본이 참조하는 버전입니다.',409);this.db.query('DELETE FROM kb_versions WHERE id=?').run(id);for(const sid of Object.keys(v.snapshots))this.prune(sid);}
+  deleteVersion(id:string) {const v=this.version(id);if(!v)throw new AppError('NOT_FOUND','Software version not found.',404);if(this.db.query("SELECT id FROM kb_versions WHERE json_extract(data,'$.parentVersionId')=?").get(id))throw new AppError('VERSION_REFERENCED','A later revision references this version.',409);this.db.query('DELETE FROM kb_versions WHERE id=?').run(id);for(const sid of Object.keys(v.snapshots))this.prune(sid);}
   currentBindings(projectId:string) {const bindings:Record<string,string>={};for(const s of this.sources().filter(s=>s.projectId===projectId)){const c=this.connection(s.id);if(c.snapshotId&&!c.unavailable)bindings[s.id]=c.snapshotId;}return bindings;}
   candidates(projectId:string):Candidate[]{return this.db.query('SELECT data FROM kb_candidates WHERE projectId=? ORDER BY rowid DESC').all(projectId).map((r:any)=>JSON.parse(r.data));}
   candidate(id:string):Candidate|null {const r=this.db.query('SELECT data FROM kb_candidates WHERE id=?').get(id) as any;return r?JSON.parse(r.data):null;}
@@ -226,11 +228,11 @@ export class KnowledgeBase {
     for(const tag of tags){known[tag.name]=tag.commit;if(!previous||previous[tag.name]===tag.commit)continue;
       const id=contentId(source.id+'\0'+tag.name+'\0'+tag.commit);if(this.candidate(id))continue;
       const bindings=this.currentBindings(c.projectId);delete bindings[source.id];
-      this.saveCandidate({id,sourceId:source.id,projectId:c.projectId,name:tag.name,commit:tag.commit,createdAt:now(),status:'pending',snapshots:bindings,warnings:previous[tag.name]?['태그가 다른 커밋으로 이동했습니다. 기존 확정 버전은 유지됩니다.']:[],automatic:true});
+      this.saveCandidate({id,sourceId:source.id,projectId:c.projectId,name:tag.name,commit:tag.commit,createdAt:now(),status:'pending',snapshots:bindings,warnings:previous[tag.name]?['The tag now points to a different commit. Previously confirmed versions are unchanged.']:[],automatic:true});
     }
     this.saveConnection(source.id,{knownTags:known});
   }
-  proposeTag(sourceId:string,name:string) {const s=this.source(sourceId);if(!s||s.kind!=='git')throw new AppError('NOT_FOUND','Git 자료를 찾을 수 없습니다.',404);const c=this.connection(sourceId),commit=c.knownTags?.[name];if(!commit)throw new AppError('NOT_FOUND','태그를 찾을 수 없습니다. 먼저 동기화하세요.',404);const id=contentId(sourceId+'\0'+name+'\0'+commit);const old=this.candidate(id);if(old)return old;return this.saveCandidate({id,projectId:c.projectId,sourceId,name,commit,createdAt:now(),status:'pending',snapshots:{},warnings:['과거 태그입니다. 해당 버전의 사양서 스냅샷을 직접 선택하세요.'],automatic:false});}
+  proposeTag(sourceId:string,name:string) {const s=this.source(sourceId);if(!s||s.kind!=='git')throw new AppError('NOT_FOUND','Git source not found.',404);const c=this.connection(sourceId),commit=c.knownTags?.[name];if(!commit)throw new AppError('NOT_FOUND','Tag not found. Sync the source first.',404);const id=contentId(sourceId+'\0'+name+'\0'+commit);const old=this.candidate(id);if(old)return old;return this.saveCandidate({id,projectId:c.projectId,sourceId,name,commit,createdAt:now(),status:'pending',snapshots:{},warnings:['This is a historical tag. Select the specification snapshots for that version.'],automatic:false});}
   embedding(key:string):number[]|null {const r=this.db.query('SELECT vector FROM kb_embeddings WHERE key=?').get(key) as any;return r?JSON.parse(r.vector):null;}
   cacheEmbedding(key:string,vector:number[]) {this.db.query('INSERT OR REPLACE INTO kb_embeddings VALUES(?,?)').run(key,JSON.stringify(vector));}
   vectorChunks(snapshotId:string) {return this.db.query('SELECT DISTINCT c.id,c.text,c.title,c.parsedKey FROM kb_chunks c JOIN kb_files f ON f.parsedKey=c.parsedKey WHERE f.snapshotId=?').all(snapshotId) as {id:string;text:string;title:string;parsedKey:string}[];}

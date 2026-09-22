@@ -8,6 +8,20 @@ param(
     [ValidateRange(10,900)][int]$StartupTimeoutSeconds = 180
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
+$llmProvider = if ($env:NEXA_LLM_PROVIDER) { $env:NEXA_LLM_PROVIDER.Trim().ToLowerInvariant() } else { 'local' }
+if ($llmProvider -notin @('local','openai','anthropic','github-copilot')) { throw 'NEXA_LLM_PROVIDER must be local, openai, anthropic, or github-copilot.' }
+if ($llmProvider -ne 'local') {
+    $llmKey = $env:NEXA_LLM_API_KEY
+    if (-not $llmKey) {
+        $llmKey = switch ($llmProvider) {
+            'openai' { $env:OPENAI_API_KEY }
+            'anthropic' { $env:ANTHROPIC_API_KEY }
+            'github-copilot' { if ($env:COPILOT_GITHUB_TOKEN) { $env:COPILOT_GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN } }
+        }
+    }
+    if (-not $llmKey) { throw "Set the API key environment variable for the $llmProvider provider before starting Nexa." }
+    if ($NoModels) { throw 'An external LLM still needs the local embedding and Qdrant services. Omit -NoModels when using NEXA_LLM_PROVIDER.' }
+}
 Assert-NexaPlatform
 $dataRoot = Get-NexaDataPath $DataDirectory
 $runRoot = Join-Path $dataRoot 'run'
@@ -24,7 +38,10 @@ if ($env:NEXA_API_KEY) { $apiHeaders['Authorization'] = 'Bearer ' + $env:NEXA_AP
 if ($Port -in @(18181,18182,16333,16334)) { throw 'API port conflicts with a reserved local backend port.' }
 $required = @('.runtime\bun\bun.exe','vendor\hono\src\index.ts','vendor\tree-sitter\web-tree-sitter.js','vendor\tree-sitter\web-tree-sitter.wasm','vendor\tree-sitter\tree-sitter-c.wasm','vendor\tree-sitter\tree-sitter-cpp.wasm','.runtime\poppler\Library\bin\pdftotext.exe')
 $required += @('.runtime\pandoc\pandoc.exe', '.runtime\git\cmd\git.exe')
-if (-not $NoModels) { $required += @('.runtime\llama\llama-server.exe','.runtime\qdrant\qdrant.exe','.models\qwen35-4b.gguf','.models\embeddinggemma-300M-Q8_0.gguf') }
+if (-not $NoModels) {
+    $required += @('.runtime\llama\llama-server.exe','.runtime\qdrant\qdrant.exe','.models\embeddinggemma-300M-Q8_0.gguf')
+    if ($llmProvider -eq 'local') { $required += '.models\qwen35-4b.gguf' }
+}
 foreach ($relative in $required) { if (-not (Test-Path -LiteralPath (Join-Path $script:NexaRoot $relative) -PathType Leaf)) { throw "Missing $relative. Run scripts\setup.cmd or scripts\setup.ps1 first." } }
 if (-not (Test-Path -LiteralPath (Join-Path $script:NexaRoot 'src\server.ts') -PathType Leaf)) { throw 'Missing src\server.ts. Restore the complete Nexa source checkout before starting.' }
 if (-not $NoModels) {
@@ -38,7 +55,7 @@ if (-not $NoModels) {
     if (-not $vc -or $vc.Installed -ne 1) { throw 'Microsoft Visual C++ 2015-2022 x64 runtime was not detected. Ask IT to install it; this script does not run external installers.' }
     Write-Host "Visual C++ x64 runtime: $($vc.Version)"
 }
-if ($CheckOnly) { Write-Host "Preflight passed. API: $apiUrl; data: $dataRoot; models enabled: $(-not $NoModels)"; return }
+if ($CheckOnly) { Write-Host "Preflight passed. API: $apiUrl; data: $dataRoot; LLM provider: $llmProvider; models enabled: $(-not $NoModels)"; return }
 New-Item -ItemType Directory -Path $runRoot,$logRoot -Force | Out-Null
 $lockPath = Join-Path $runRoot 'launcher.lock'
 try { $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) } catch { throw 'Another start/stop operation is already running for this data directory.' }
@@ -70,7 +87,7 @@ function Start-Component([string]$Name, [string]$Executable, [string[]]$Argument
     $process = Start-Process -FilePath $Executable -ArgumentList $quoted -WorkingDirectory $script:NexaRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logRoot "$Name.stdout.log") -RedirectStandardError (Join-Path $logRoot "$Name.stderr.log")
     $record = @{ name = $Name; pid = $process.Id; executable = $Executable; startedAt = $process.StartTime.ToUniversalTime().ToString('o') }
     $started.Add($record)
-    Write-NexaState $statePath $started.ToArray() $apiUrl @{ listenAddress = $ListenAddress }
+    Write-NexaState $statePath $started.ToArray() $apiUrl @{ listenAddress = $ListenAddress; llmProvider = $llmProvider }
     Write-Host "Waiting for $Name..."
     Wait-Healthy $Name $HealthUrl $process
 }
@@ -84,7 +101,7 @@ try {
         if ($live.Count -gt 0) {
             $api = @($live | Where-Object name -eq 'api')
             if ($api.Count -eq 1 -and $live.Count -eq @($existing.processes).Count) {
-                Assert-NexaSessionSettings $existing $apiUrl $ListenAddress ([bool]$NoModels)
+                Assert-NexaSessionSettings $existing $apiUrl $ListenAddress ([bool]$NoModels) $llmProvider
                 try { $health = Invoke-WebRequest -Uri ($existing.url + '/api/v1/health') -Headers $apiHeaders -UseBasicParsing -TimeoutSec 3 } catch { throw 'Nexa processes exist but API health failed. Check NEXA_API_KEY or run scripts\stop.cmd or scripts\stop.ps1 before restarting.' }
                 if ($health.StatusCode -eq 200) { Write-Host "Nexa is already running: $($existing.url)"; return }
             }
@@ -106,7 +123,11 @@ try {
         Set-ChildEnvironment 'NEXA_EMBEDDING_URL' 'http://127.0.0.1:18182'
         Set-ChildEnvironment 'NEXA_QDRANT_URL' 'http://127.0.0.1:16333'
         $llama = Join-Path $script:NexaRoot '.runtime\llama\llama-server.exe'
-        Start-Component 'generation' $llama @('-m',(Join-Path $script:NexaRoot '.models\qwen35-4b.gguf'),'--host','127.0.0.1','--port','18181','--offline','--no-webui','-ngl','99','-np','1','-c','4096') 'http://127.0.0.1:18181/health'
+        if ($llmProvider -eq 'local') {
+            Start-Component 'generation' $llama @('-m',(Join-Path $script:NexaRoot '.models\qwen35-4b.gguf'),'--host','127.0.0.1','--port','18181','--offline','--no-webui','-ngl','99','-np','1','-c','4096') 'http://127.0.0.1:18181/health'
+        } else {
+            Write-Host "Using external LLM provider: $llmProvider"
+        }
         Start-Component 'embedding' $llama @('-m',(Join-Path $script:NexaRoot '.models\embeddinggemma-300M-Q8_0.gguf'),'--host','127.0.0.1','--port','18182','--offline','--no-webui','-ngl','99','-np','1','-c','2048','-b','2048','-ub','2048','--embedding','--pooling','mean') 'http://127.0.0.1:18182/health'
         $qdrantRoot = Join-Path $dataRoot 'qdrant'
         New-Item -ItemType Directory -Path $qdrantRoot -Force | Out-Null

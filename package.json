@@ -7,5 +7,8 @@
     "start": "bun --no-install src/server.ts",
     "test": "bun --no-install test ./tests"
   },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.13"
+  },
   "engines": { "bun": "1.4.2" }
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, lexicalQuery } from "../src/storage";
 import { SerialGate, Providers } from "../src/providers";
+import { loadConfig } from "../src/config";
 import type { Config } from "../src/config";
 import { search, validateAnswer, validateSearch } from "../src/retrieval";
 import type { Chunk, Document, Hit, Source } from "../src/types";
@@ -141,7 +142,7 @@ describe("retrieval and answer validation", () => {
     const result = await search(store, fakeProviders, { query: "UART_CR" });
     expect(result.mode).toBe("keyword");
     expect(result.hits).toHaveLength(1);
-    expect(result.warnings[0]).toContain("키워드 검색만");
+    expect(result.warnings[0]).toContain("Used keyword search only");
   });
 
   test("unknown or malformed citations are rejected before an answer is returned", () => {
@@ -165,7 +166,7 @@ describe("retrieval and answer validation", () => {
       { answerable: false, answer: "invented claim", citations: ["D1"] },
       { answerable: true, answer: "invented claim", citations: [] },
       { answerable: true, answer: " \n", citations: ["D1"] },
-    ]) expect(validateAnswer(value, context)).toEqual({ answerable: false, answer: "자료에서 확인할 수 없습니다.", citations: [] });
+    ]) expect(validateAnswer(value, context)).toEqual({ answerable: false, answer: "The available sources do not answer this question.", citations: [] });
   });
 
   test("search validation rejects malformed boundaries and preserves explicit filters", () => {
@@ -244,5 +245,79 @@ describe("local provider response validation", () => {
     expect(await providers.vectorSearch([1], { query: "UART" })).toEqual([]);
     providers.request = async () => ({ result: { points: [{ id: 42, score: 0.9 }] } });
     expect(await providers.vectorSearch([1], { query: "UART" })).toEqual([{ id: "42", score: 0.9 }]);
+  });
+});
+
+describe("external generation providers", () => {
+  function externalConfig(provider: "openai" | "anthropic"): Config {
+    return {
+      mode: "full",
+      llmProvider: provider,
+      llmApiKey: "provider-secret",
+      llmModel: "provider-model",
+      llmBaseURL: provider === "openai" ? "https://openai.test/v1" : "https://anthropic.test",
+      llmTimeoutMs: 5_000,
+    } as Config;
+  }
+
+  test("configuration selects provider-specific API key fallbacks without exposing them", () => {
+    const config = loadConfig({
+      NEXA_DATA_DIR: join(directory, "config"),
+      NEXA_ADMIN_KEY: "administrator-secret-key",
+      NEXA_LLM_PROVIDER: "anthropic",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+    });
+    expect(config.llmProvider).toBe("anthropic");
+    expect(config.llmApiKey).toBe("anthropic-secret");
+    expect(JSON.stringify({ provider: config.llmProvider, model: config.llmModel })).not.toContain("anthropic-secret");
+  });
+
+  test("OpenAI uses Bearer authentication and structured chat completions", async () => {
+    const originalFetch = globalThis.fetch;
+    let request: { url: string; init: RequestInit } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init: init! };
+      return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: '{"answerable":true,"answer":"grounded","citations":["C1"]}' } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const result = await new Providers(externalConfig("openai")).complete([{ role: "user", content: "Question" }], ["C1"]);
+      const body = JSON.parse(request!.init.body as string);
+      expect(result).toEqual({ answerable: true, answer: "grounded", citations: ["C1"] });
+      expect(request!.url).toBe("https://openai.test/v1/chat/completions");
+      expect(new Headers(request!.init.headers).get("authorization")).toBe("Bearer provider-secret");
+      expect(body.max_completion_tokens).toBe(512);
+      expect(body.response_format.type).toBe("json_schema");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("Claude uses the Messages API and carries the JSON schema in system instructions", async () => {
+    const originalFetch = globalThis.fetch;
+    let request: { url: string; init: RequestInit } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init: init! };
+      return new Response(JSON.stringify({ content: [{ type: "text", text: '{"answerable":false,"answer":"no evidence","citations":[]}' }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const result = await new Providers(externalConfig("anthropic")).complete([{ role: "system", content: "Answer from evidence." }, { role: "user", content: "Question" }], ["C1"]);
+      const body = JSON.parse(request!.init.body as string);
+      expect(result).toEqual({ answerable: false, answer: "no evidence", citations: [] });
+      expect(request!.url).toBe("https://anthropic.test/v1/messages");
+      expect(new Headers(request!.init.headers).get("x-api-key")).toBe("provider-secret");
+      expect(new Headers(request!.init.headers).get("anthropic-version")).toBe("2023-06-01");
+      expect(body.system).toContain("JSON Schema");
+      expect(body.messages).toEqual([{ role: "user", content: "Question" }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("external health checks keep local embedding and vector services but skip the local generation server", async () => {
+    const providers = new Providers(externalConfig("openai"));
+    const paths: string[] = [];
+    providers.request = async (_base, path) => { paths.push(path); return {}; };
+    expect(await providers.health()).toEqual({ embedding: { ok: true }, generation: { ok: true }, vector: { ok: true } });
+    expect(paths.sort()).toEqual(["/", "/health"]);
   });
 });
