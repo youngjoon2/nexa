@@ -79,7 +79,7 @@ async function readOutput(stream: ReadableStream<Uint8Array>, max: number, kill:
 }
 
 async function runGit(gitPath: string, cache: string, args: string[], options: { input?: string; max?: number; timeout?: number; action?: string } = {}): Promise<Uint8Array> {
-  if (!gitPath) throw new AppError('GIT_UNAVAILABLE', 'Git 실행 파일이 없습니다. scripts/setup.ps1로 MinGit를 설치하세요.', 503);
+  if (!gitPath) throw new AppError('GIT_UNAVAILABLE', 'Git 실행 파일이 없습니다. scripts/setup.cmd 또는 scripts/setup.ps1로 MinGit를 설치하세요.', 503);
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && !key.toUpperCase().startsWith('GIT_') && !key.toUpperCase().startsWith('GCM_')) env[key] = value;
@@ -101,7 +101,7 @@ async function runGit(gitPath: string, cache: string, args: string[], options: {
     child = Bun.spawn([gitPath, ...fixed, '--git-dir', cache, ...args], {
       env, stdin: options.input === undefined ? 'ignore' : 'pipe', stdout: 'pipe', stderr: 'pipe', windowsHide: true,
     });
-  } catch { throw new AppError('GIT_UNAVAILABLE', 'Git 실행 파일을 시작하지 못했습니다. scripts/setup.ps1로 MinGit 설치를 확인하세요.', 503); }
+  } catch { throw new AppError('GIT_UNAVAILABLE', 'Git 실행 파일을 시작하지 못했습니다. scripts/setup.cmd 또는 scripts/setup.ps1로 MinGit 설치를 확인하세요.', 503); }
   let termination: Promise<void> | undefined;
   const stop = (): Promise<void> => termination ??= (async () => {
     // Git may own ssh/remote-https children that keep pipes open. End only this spawned process tree.

@@ -4,13 +4,24 @@ Nexa는 Windows x64에서 Bun, llama.cpp CUDA, Qdrant, Poppler, Pandoc, MinGit�
 
 ## 1. 환경 확인
 
-- Windows 10/11 x64, PowerShell 5.1 이상, Windows 기본 `tar.exe`가 필요합니다.
+- Windows 10/11 x64, Windows 기본 PowerShell 5.1과 `tar.exe`가 필요합니다. CMD에서도 설치·실행할 수 있으며, `.cmd` 진입점이 내부적으로 Windows PowerShell을 사용합니다.
 - 전체 설치에 약 12 GiB의 여유 공간을 확보합니다. 실제 색인 자료 및 검색 데이터 공간은 별도입니다.
 - NVIDIA GPU와 CUDA 12.4 호환 드라이버, Microsoft Visual C++ 2015–2022 x64 런타임이 필요합니다. 이 스크립트는 드라이버·시스템 런타임 설치, 관리자 권한 변경, 방화벽 변경을 수행하지 않습니다.
 - 기술 검증은 RTX 4060 Ti 8GB에서 수행했습니다. RTX A4000 16GB 회사 PC의 동시 사용자 처리량과 회사망 다운로드는 별도 확인 대상입니다.
 - `config/artifacts.json`에 버전, SHA256, 원본 URL, 제3자 모델 출처가 고정되어 있습니다. 모델 이용 조건은 `THIRD_PARTY_NOTICES.md`에 있습니다.
 
-프로젝트 루트의 PowerShell에서 실행합니다.
+프로젝트 루트의 명령 프롬프트(CMD) 또는 PowerShell에서 실행합니다. `-CheckOnly`는 설치·실행 전 확인만 수행합니다.
+
+CMD:
+
+```cmd
+scripts\setup.cmd -CheckOnly
+scripts\setup.cmd
+scripts\start.cmd -CheckOnly
+scripts\start.cmd
+```
+
+PowerShell:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -CheckOnly
@@ -21,7 +32,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 
 브라우저에서 `http://127.0.0.1:8787`을 엽니다. 설치는 검증된 로컬 캐시를 우선 사용하고, 부족한 파일만 GitHub에서 받습니다. 다운로드 후 SHA256이 일치하지 않으면 설치하지 않습니다. 모델 파트는 파일 번호 순서로 연결하고 완성 모델의 해시도 확인합니다. 설치 기록은 `.runtime/installed.json`에 저장합니다.
 
-`-ExecutionPolicy Bypass`는 위 PowerShell 프로세스에만 적용됩니다. 회사의 실행 정책은 조직 규칙을 따릅니다.
+CMD 진입점은 같은 이름의 `.ps1`에 모든 옵션을 전달하고 종료 코드를 CMD의 `ERRORLEVEL`로 반환합니다. Windows PowerShell을 `-NoProfile -NonInteractive -ExecutionPolicy Bypass`로 실행하며 별도 PowerShell 창은 필요하지 않습니다. `-ExecutionPolicy Bypass`는 해당 프로세스에만 적용되며 시스템·사용자의 실행 정책을 바꾸지 않습니다. 회사의 실행 정책은 조직 규칙을 따릅니다.
+
+다른 폴더에서는 `"C:\Projects\Nexa App\scripts\start.cmd" -CheckOnly`처럼 스크립트의 전체 경로를 큰따옴표로 감싸 실행할 수 있습니다. 프로그램과 런타임은 스크립트 위치를 기준으로 찾습니다. 다른 `.bat`·`.cmd` 파일 안에서 호출할 때는 다음처럼 `call`을 붙여야 이후 명령을 계속 실행할 수 있습니다.
+
+```cmd
+call "C:\Projects\Nexa App\scripts\start.cmd" -CheckOnly
+if errorlevel 1 exit /b %errorlevel%
+```
 
 ## 2. GitHub와 오프라인 캐시
 
@@ -29,8 +47,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 
 기본 캐시 위치는 `%LOCALAPPDATA%\Temp\nexa-feasibility-20260921`입니다. 다른 PC에서는 `config/artifacts.json`의 각 항목에 있는 `cache` 상대 경로에 따라 파일을 배치하고 지정합니다.
 
+CMD:
+
+```cmd
+scripts\setup.cmd -CachePath "D:\Nexa Artifacts" -Offline
+```
+
+PowerShell:
+
 ```powershell
-.\scripts\setup.ps1 -CachePath D:\NexaArtifacts -Offline
+.\scripts\setup.ps1 -CachePath "D:\Nexa Artifacts" -Offline
 ```
 
 `-Offline`에서는 네트워크로 다운로드하지 않습니다. 검증된 `.runtime/downloads` 파일도 재사용합니다. 아카이브 안의 절대 경로, 상위 경로 접근, 심볼릭 링크·하드 링크는 거부합니다. 캐시 파일이 손상되었거나 누락되면 파일명을 표시하고 종료합니다. 설치 도중 종료된 다운로드는 가능한 경우 재개하며, 최대 3회 재시도합니다.
@@ -41,11 +67,46 @@ DOCX와 Git 기능에 필요한 추가 캐시 파일은 `pandoc-3.11-windows-x86
 
 기본 데이터 디렉터리는 `data`이고, `-DataDirectory D:\NexaData` 또는 `NEXA_DATA_DIR`로 바꿀 수 있습니다. 바꾼 경우 시작·중지에 같은 디렉터리를 사용합니다. 이 안에 SQLite, 원문 객체(`objects`), Git bare 캐시(`git-cache`), 업로드, Qdrant 저장소, 관리자 키, 실행 기록, 로그가 보관됩니다. 프로그램 파일을 덮어쓸 때는 먼저 중지합니다. 설치기는 이전 검증용 Qdrant 저장소나 테스트 자료를 복사하지 않습니다.
 
+공백이 있는 경로는 큰따옴표로 감쌉니다. 예를 들어 다른 데이터 폴더로 시작하고 나중에 중지할 때는 다음 명령을 각각 사용합니다.
+
+CMD:
+
+```cmd
+scripts\start.cmd -DataDirectory "D:\Nexa Data"
+scripts\stop.cmd -DataDirectory "D:\Nexa Data"
+```
+
+PowerShell:
+
+```powershell
+.\scripts\start.ps1 -DataDirectory "D:\Nexa Data"
+.\scripts\stop.ps1 -DataDirectory "D:\Nexa Data"
+```
+
 관리자 키는 첫 API 실행 때 `data/admin-key.txt`에 생성됩니다. 기존 `NEXA_ADMIN_KEY`와 `NEXA_API_KEY` 환경 변수는 자식 프로세스에 전달하고 키를 명령줄이나 로그에 출력하지 않습니다. 팀 접속은 공유 검색 키를 환경 변수로 설정한 뒤 실행합니다.
+
+CMD:
+
+```cmd
+set "NEXA_API_KEY=replace-with-a-long-random-team-key"
+scripts\start.cmd -ListenAddress 0.0.0.0 -Port 8787
+```
+
+PowerShell:
 
 ```powershell
 $env:NEXA_API_KEY = 'replace-with-a-long-random-team-key'
 .\scripts\start.ps1 -ListenAddress 0.0.0.0 -Port 8787
+```
+
+키는 24자 이상이어야 합니다. 위 설정은 현재 셸과 이후 시작하는 자식 프로세스에 적용됩니다. 서버 시작 후 현재 셸에서 키를 지우려면 다음 명령을 사용합니다. 이미 실행 중인 서버의 키는 유지됩니다.
+
+```cmd
+set "NEXA_API_KEY="
+```
+
+```powershell
+Remove-Item Env:NEXA_API_KEY
 ```
 
 팀원은 `http://서버IP:8787`에 접속합니다. 모델 서버와 Qdrant는 항상 `127.0.0.1`에만 바인딩됩니다. 팀 서비스 공개 범위 및 HTTPS는 회사 내부 프록시·네트워크 구성으로 정합니다. 서로 다른 출처의 UI를 사용하는 경우 API의 `NEXA_ALLOWED_ORIGINS`에 허용할 출처를 명시합니다. 기본 제공 UI는 API와 같은 출처입니다.
@@ -96,6 +157,16 @@ DOCX는 Pandoc sandbox로 제목·문단·목록·표의 텍스트를 추출합�
 
 ## 5. 중지와 문제 확인
 
+CMD에서는 `type`으로 로그 전체를 확인합니다.
+
+```cmd
+scripts\stop.cmd
+type data\logs\api.stderr.log
+type data\logs\generation.stderr.log
+```
+
+PowerShell에서는 마지막 50줄만 확인할 수 있습니다.
+
 ```powershell
 .\scripts\stop.ps1
 Get-Content .\data\logs\api.stderr.log -Tail 50
@@ -108,11 +179,20 @@ Get-Content .\data\logs\generation.stderr.log -Tail 50
 
 모델 없이 업로드·색인·키워드 검색을 점검하려면 아래 명령을 사용합니다. 이 모드에서는 모델 생성 답변과 벡터 검색을 사용할 수 없습니다.
 
+CMD:
+
+```cmd
+scripts\setup.cmd -NoModels
+scripts\start.cmd -NoModels
+```
+
+PowerShell:
+
 ```powershell
 .\scripts\setup.ps1 -NoModels
 .\scripts\start.ps1 -NoModels
 ```
 
-`-NoModels`는 API에 `NEXA_MODE=keyword`를 전달하고 모델/Qdrant 프로세스를 시작하지 않습니다. Git·폴더·DOCX 수집과 원문 사양 diff는 사용할 수 있지만 모델 답변·비교 요약은 제공하지 않습니다. 기능 분석은 후보 근거를 표시하더라도 모델 판정을 수행하지 않아 미확인으로 남깁니다. 전체 모드로 전환할 때는 중지 후 모델 설치를 완료하고 `start.ps1`을 다시 실행합니다. 두 모드의 자료 디렉터리는 같습니다.
+`-NoModels`는 API에 `NEXA_MODE=keyword`를 전달하고 모델/Qdrant 프로세스를 시작하지 않습니다. Git·폴더·DOCX 수집과 원문 사양 diff는 사용할 수 있지만 모델 답변·비교 요약은 제공하지 않습니다. 기능 분석은 후보 근거를 표시하더라도 모델 판정을 수행하지 않아 미확인으로 남깁니다. 전체 모드로 전환할 때는 중지 후 모델 설치를 완료하고 `start.cmd` 또는 `start.ps1`을 `-NoModels` 없이 다시 실행합니다. 두 모드의 자료 디렉터리는 같습니다.
 
 프로젝트와 데이터 폴더는 쓰기 가능한 로컬 디스크에 두는 것이 기본입니다. 런타임 버전 변경은 manifest의 출처 및 해시를 검토하고 검증한 뒤 중지된 상태에서 설치합니다. `.runtime`, `.models`, `vendor`, `data`는 Git에 올리지 않으며 별도의 배포 캐시와 데이터 백업 대상으로 관리합니다.

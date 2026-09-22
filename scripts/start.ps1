@@ -25,7 +25,7 @@ if ($Port -in @(18181,18182,16333,16334)) { throw 'API port conflicts with a res
 $required = @('.runtime\bun\bun.exe','vendor\hono\src\index.ts','vendor\tree-sitter\web-tree-sitter.js','vendor\tree-sitter\web-tree-sitter.wasm','vendor\tree-sitter\tree-sitter-c.wasm','vendor\tree-sitter\tree-sitter-cpp.wasm','.runtime\poppler\Library\bin\pdftotext.exe')
 $required += @('.runtime\pandoc\pandoc.exe', '.runtime\git\cmd\git.exe')
 if (-not $NoModels) { $required += @('.runtime\llama\llama-server.exe','.runtime\qdrant\qdrant.exe','.models\qwen35-4b.gguf','.models\embeddinggemma-300M-Q8_0.gguf') }
-foreach ($relative in $required) { if (-not (Test-Path -LiteralPath (Join-Path $script:NexaRoot $relative) -PathType Leaf)) { throw "Missing $relative. Run scripts\setup.ps1 first." } }
+foreach ($relative in $required) { if (-not (Test-Path -LiteralPath (Join-Path $script:NexaRoot $relative) -PathType Leaf)) { throw "Missing $relative. Run scripts\setup.cmd or scripts\setup.ps1 first." } }
 if (-not (Test-Path -LiteralPath (Join-Path $script:NexaRoot 'src\server.ts') -PathType Leaf)) { throw 'Missing src\server.ts. Restore the complete Nexa source checkout before starting.' }
 if (-not $NoModels) {
     $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
@@ -76,7 +76,7 @@ function Start-Component([string]$Name, [string]$Executable, [string[]]$Argument
 }
 try {
     if (Test-Path -LiteralPath $statePath) {
-        $existing = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $existing = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($existing.root -ne $script:NexaRoot) { throw 'Data directory is owned by another Nexa project.' }
         $unverified = @($existing.processes | Where-Object { (Get-Process -Id $_.pid -ErrorAction SilentlyContinue) -and -not (Get-NexaOwnedProcess $_) })
         if ($unverified.Count -gt 0) { throw 'A recorded process is alive but ownership cannot be verified. The process record is preserved; inspect it before recovery.' }
@@ -85,10 +85,10 @@ try {
             $api = @($live | Where-Object name -eq 'api')
             if ($api.Count -eq 1 -and $live.Count -eq @($existing.processes).Count) {
                 Assert-NexaSessionSettings $existing $apiUrl $ListenAddress ([bool]$NoModels)
-                try { $health = Invoke-WebRequest -Uri ($existing.url + '/api/v1/health') -Headers $apiHeaders -UseBasicParsing -TimeoutSec 3 } catch { throw 'Nexa processes exist but API health failed. Check NEXA_API_KEY or run scripts\stop.ps1 before restarting.' }
+                try { $health = Invoke-WebRequest -Uri ($existing.url + '/api/v1/health') -Headers $apiHeaders -UseBasicParsing -TimeoutSec 3 } catch { throw 'Nexa processes exist but API health failed. Check NEXA_API_KEY or run scripts\stop.cmd or scripts\stop.ps1 before restarting.' }
                 if ($health.StatusCode -eq 200) { Write-Host "Nexa is already running: $($existing.url)"; return }
             }
-            throw 'A partial Nexa session is still running. Run scripts\stop.ps1 before restarting.'
+            throw 'A partial Nexa session is still running. Run scripts\stop.cmd or scripts\stop.ps1 before restarting.'
         }
         Remove-Item -LiteralPath $statePath -Force
     }

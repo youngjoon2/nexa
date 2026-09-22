@@ -4,12 +4,23 @@
 
 ## 실행
 
-프로젝트 폴더의 PowerShell에서 실행합니다. 현재 개발 PC에는 검증된 런타임과 모델을 설치해 두었습니다.
+프로젝트 폴더의 명령 프롬프트(CMD) 또는 PowerShell에서 실행합니다. 현재 개발 PC에는 검증된 런타임과 모델을 설치해 두었습니다.
+
+CMD:
+
+```cmd
+scripts\setup.cmd
+scripts\start.cmd
+```
+
+PowerShell:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
+
+CMD 진입점은 Windows 기본 PowerShell 5.1로 기존 설치·실행 스크립트를 호출합니다. PowerShell 창을 열거나 시스템 실행 정책을 바꿀 필요는 없으며, `.ps1`과 같은 옵션을 사용할 수 있습니다.
 
 브라우저에서 **http://127.0.0.1:8787** 을 엽니다.
 
@@ -21,8 +32,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 
 예제 폴더는 `examples/atlas-a`, `examples/atlas-b`입니다. 각각 보드 `ATLAS`, 리비전 `A`와 `B`로 등록하면 `UART 콘솔 통신 속도는 얼마야?`를 비교할 수 있습니다. **예제는 가상의 개발용 자료**입니다.
 
+중지할 때는 사용 중인 셸에 맞는 명령을 실행합니다.
+
+```cmd
+scripts\stop.cmd
+```
+
 ```powershell
-.\scripts\stop.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop.ps1
 ```
 
 새 PC 설치, GitHub 접속 도메인, 오프라인 캐시, 팀 접속 설정은 [Windows 설치 안내](docs/setup-windows.md)를 참고하세요. API 계약과 다른 클라이언트 연동 예시는 [API 문서](docs/api.md)에 있습니다.
@@ -94,6 +111,21 @@ Qdrant 검색 결과는 SQLite의 프로젝트·스냅샷·모듈 범위와 다�
 처음 구버전 데이터를 열 때 기존 문서가 있으면 `data/backups/before-knowledge-*.sqlite`에 SQLite 사본을 만듭니다. 이관 자료의 최초 스냅샷은 기존 추출 텍스트이며 과거 원본 DOCX/PDF를 복원한 것은 아닙니다. 이 추출본은 원문 보존 버전으로 확정할 수 없으며 원문 보존은 재동기화한 시점부터 적용됩니다.
 
 ## 검증
+
+CMD:
+
+```cmd
+.runtime\bun\bun.exe --no-install test ./tests
+REM 실행 스크립트의 프로세스 소유권과 설정 불일치 검사 (서비스 변경 없음)
+scripts\test-process-ownership.cmd
+scripts\test-session-settings.cmd
+REM 실제 모델 서비스가 실행 중일 때: 예제 자료를 등록하고 6개 질의를 확인
+.runtime\bun\bun.exe --no-install tests/live-smoke.ts
+REM 선택 실행: 임시 자료로 50개 버전 × 10,000개 파일 항목의 저장·키워드 검색 확인
+.runtime\bun\bun.exe --no-install tests/scale-smoke.ts --run
+```
+
+PowerShell:
 
 ```powershell
 & .\.runtime\bun\bun.exe --no-install test ./tests

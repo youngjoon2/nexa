@@ -8,7 +8,7 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-NexaPlatform
 $manifestPath = Join-Path $script:NexaRoot 'config\artifacts.json'
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $artifacts = @($manifest.artifacts | Where-Object { -not ($NoModels -and $_.model) })
 $downloadRoot = Join-Path $script:NexaRoot '.runtime\downloads'
 
@@ -114,7 +114,7 @@ if ($CheckOnly) {
     return
 }
 if ($drive.AvailableFreeSpace -lt ($requiredGiB * 1GB)) { throw "At least $requiredGiB GiB of free disk is required for installation." }
-if (Test-Path -LiteralPath (Join-Path $script:NexaRoot 'data\run\processes.json')) { throw 'Stop Nexa before changing runtime files (scripts\stop.ps1).' }
+if (Test-Path -LiteralPath (Join-Path $script:NexaRoot 'data\run\processes.json')) { throw 'Stop Nexa before changing runtime files (scripts\stop.cmd or scripts\stop.ps1).' }
 $runtimePrefix = (Join-Path $script:NexaRoot '.runtime') + '\'
 foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
     try { $executable = $process.Path } catch { continue }
